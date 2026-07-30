@@ -1,0 +1,50 @@
+version: 2
+default_permission_matcher: bypass_plus
+defaults:
+  full: openai/gpt-5.6-luna
+  mini: neuralwatt/glm-5.2-fast
+providers:
+  openai:
+    kind:
+      type: catalog
+      name: openai
+    auth:
+      type: static_key
+      key: ${OPENAI_API_KEY}
+  anthropic:
+    kind:
+      type: catalog
+      name: anthropic
+    auth:
+      type: static_key
+      key: ${ANTHROPIC_API_KEY}
+  zai:
+    kind:
+      type: catalog
+      name: zai
+    auth:
+      type: static_key
+      key: ${ZAI_API_KEY}
+  neuralwatt:
+    kind:
+      type: catalog
+      name: neuralwatt
+    auth:
+      type: static_key
+      key: ${NEURALWATT_API_KEY}
+integrations:
+  search:
+    strategy: round_robin
+    providers:
+      brave:
+        enabled: true
+        key: ${BRAVE_API_KEY}
+      tavily:
+        enabled: true
+        key: ${TAVILY_API_KEY}
+      exa:
+        enabled: true
+        key: ${EXA_API_KEY}
+      kagi:
+        enabled: true
+        key: ${KAGI_API_KEY}
