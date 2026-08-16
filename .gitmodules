@@ -1,0 +1,3 @@
+[submodule "angel/vendor/nineangel"]
+	path = angel/vendor/nineangel
+	url = https://github.com/PropterMalone/NineAngel

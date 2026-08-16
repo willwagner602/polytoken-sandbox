@@ -1,8 +1,8 @@
 version: 2
 default_permission_matcher: bypass_plus
 defaults:
-  full: openai/gpt-5.6-luna
-  mini: neuralwatt/glm-5.2-fast
+  full: codex/gpt-5.6-luna(low)
+  mini: codex/gpt-5.6-luna(none)
 providers:
   openai:
     kind:
@@ -32,6 +32,20 @@ providers:
     auth:
       type: static_key
       key: ${NEURALWATT_API_KEY}
+  codex:
+    kind:
+      type: catalog
+      name: codex
+    auth:
+      type: codex_device
+      profile: default
+  opencode:
+    kind:
+      type: catalog
+      name: opencode
+    auth:
+      type: static_key
+      key: ${OPENCODE_API_KEY}
 integrations:
   search:
     strategy: round_robin
