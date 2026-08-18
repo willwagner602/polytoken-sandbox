@@ -1,0 +1,9 @@
+[
+  {
+    "name": "ponytail-pre-model-turn",
+    "event": "pre_model_turn",
+    "handler": {
+      "bash": "bash \"$HOME/.config/polytoken/hooks/ponytail-hook.sh\""
+    }
+  }
+]

@@ -63,3 +63,11 @@ Polytoken's own config/cache/auth/session state lives per-project, under
 run. Add `.polytoken/` to each project's `.gitignore` — the state dir holds
 session history and device-auth tokens that shouldn't be committed, even
 though `config.yaml` itself has no literal secrets.
+
+## Ponytail integration
+
+Every `pts` invocation copies the repository's Ponytail instructions and
+Polytoken hook into the effective per-project Polytoken configuration. The
+`pre_model_turn` hook injects those instructions before model requests,
+regardless of which configured provider or model is selected. This is
+instruction-level guidance, not enforcement of model behavior.
