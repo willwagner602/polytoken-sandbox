@@ -1,5 +1,12 @@
 [
   {
+    "name": "ponytail-pre-user-prompt",
+    "event": "pre_user_prompt",
+    "handler": {
+      "bash": "bash \"$HOME/.config/polytoken/hooks/ponytail-hook.sh\""
+    }
+  },
+  {
     "name": "ponytail-pre-model-turn",
     "event": "pre_model_turn",
     "handler": {

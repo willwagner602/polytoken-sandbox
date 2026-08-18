@@ -66,8 +66,19 @@ though `config.yaml` itself has no literal secrets.
 
 ## Ponytail integration
 
-Every `pts` invocation copies the repository's Ponytail instructions and
-Polytoken hook into the effective per-project Polytoken configuration. The
-`pre_model_turn` hook injects those instructions before model requests,
-regardless of which configured provider or model is selected. This is
-instruction-level guidance, not enforcement of model behavior.
+Every `pts` invocation copies the repository's Ponytail instructions, skills,
+configuration, and Polytoken hooks into the effective per-project Polytoken
+configuration. The `pre_model_turn` hook injects the active Ponytail rules
+before model requests, regardless of which configured provider or model is
+selected.
+
+The default mode is `full`. Set `PONYTAIL_DEFAULT_MODE` to `off`, `lite`,
+`full`, or `ultra` before launching `pts`. During a session, exact prompts such
+as `ponytail ultra`, `ponytail full`, and `ponytail off` change the mode. The
+portable skills can be invoked with Polytoken's skill syntax, for example
+`@skill:ponytail-review`. Polytoken does not document custom slash-command
+extensions, so this integration does not claim to provide native
+`/ponytail-*` commands.
+
+This is instruction-level guidance, not enforcement of model behavior. Run
+`bash ponytail/tests/test_hook.sh` to check mode persistence and hook output.
