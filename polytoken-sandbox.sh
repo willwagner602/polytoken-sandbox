@@ -78,6 +78,7 @@ pts() {
     cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks/ponytail-hook.sh" "$global_config_dir/hooks/ponytail-hook.sh"
     chmod 755 "$global_config_dir/hooks/ponytail-hook.sh"
     cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks.json" "$global_config_dir/hooks.json"
+    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/config.json" "$global_config_dir/ponytail-config.json"
 
     # Only the invocation directory (which contains the polytoken state
     # dir above), the read-only polytoken binary, and the job-digest
@@ -155,6 +156,7 @@ pts() {
         -e TAVILY_API_KEY \
         -e EXA_API_KEY \
         -e KAGI_API_KEY \
+        -e PONYTAIL_DEFAULT_MODE \
         "${git_env[@]}" \
         --entrypoint /usr/local/bin/polytoken \
         "$image" \
