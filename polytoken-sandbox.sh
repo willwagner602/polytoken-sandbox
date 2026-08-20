@@ -141,6 +141,7 @@ pts() {
     fi
 
     podman run --rm -it \
+        --privileged \
         --userns=keep-id \
         --security-opt label=disable \
         --network=host \
@@ -158,7 +159,34 @@ pts() {
         -e KAGI_API_KEY \
         -e PONYTAIL_DEFAULT_MODE \
         "${git_env[@]}" \
-        --entrypoint /usr/local/bin/polytoken \
+        --entrypoint /bin/bash \
         "$image" \
-        "$@"
+        -lc 'export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
+              mkdir -p "$XDG_RUNTIME_DIR"
+              export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+              # --storage-driver vfs --iptables=false --bridge=none: this
+              # host'"'"'s kernel has no ip_tables/ip6_tables NAT modules, so
+              # dockerd'"'"'s default bridge networking cannot register (fails
+              # with "modprobe: FATAL: Module ip_tables not found"). Every
+              # `docker run` therefore needs --network=host instead of a
+              # container-private network.
+              dockerd-rootless.sh --storage-driver vfs --iptables=false --bridge=none >/tmp/dockerd.log 2>&1 &
+              daemon_pid=$!
+              ready=0
+              for _ in {1..30}; do
+                  if docker info >/dev/null 2>&1; then
+                      ready=1
+                      break
+                  fi
+                  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+                      break
+                  fi
+                  sleep 1
+              done
+              if [ "$ready" != 1 ]; then
+                  echo "pts: Docker daemon did not become ready; continuing without it (docker commands will fail)." >&2
+                  cat /tmp/dockerd.log >&2
+              fi
+              exec /usr/local/bin/polytoken "$@"' \
+        -- "$@"
 }
