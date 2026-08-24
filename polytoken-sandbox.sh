@@ -4,14 +4,28 @@
 # Defines `pts` — runs polytoken inside a podman container.
 #
 # The container only mounts the invocation directory (read/write), the
-# ~/.job_digest/secrets.json file (read-only), and the polytoken binary
-# (read-only) — not the rest of $HOME. Polytoken's own config/cache/auth/
-# session state lives in a `.polytoken/` dir under the invocation
-# directory, so it persists per-project across runs. Shares the host
-# network so LLM API calls work normally.
+# ~/.job_digest/secrets.json file (read-only), and a persistent named volume
+# holding the polytoken binary — not the rest of $HOME. Polytoken's own
+# config/cache/auth/session state lives in a `.polytoken/` dir under the
+# invocation directory, so it persists per-project across runs. Shares the
+# host network so LLM API calls work normally.
 #
-# The polytoken binary on the host is mounted read-only into the container,
-# so it stays in sync — no image rebuild needed when polytoken updates.
+# The polytoken binary lives in the `polytoken-sandbox-bin` named volume,
+# shared across every project (like the image) rather than mounted from the
+# host. It's seeded once from ~/.local/bin/polytoken the first time the
+# volume is empty; after that the container maintains its own copy,
+# decoupled from the host binary. Run `pts update` to upgrade it in place —
+# that self-update persists in the volume across --rm'd container runs.
+#
+# Runs --privileged so nested `docker`/`podman` (installed in the image) can
+# actually start containers, not just run as CLIs — genuine nested container
+# execution needs real host-level capabilities (kernel module access, device
+# nodes, a real subordinate-uid delegation) that a plain rootless container
+# can't grant itself, no matter how its --userns/capabilities/subuid are
+# configured (tried; see the Containerfile's comment on this for what was
+# ruled out and why). This is a deliberate, real reduction in this sandbox's
+# isolation from the host — accepted in exchange for nested containers
+# working, not an oversight.
 #
 # Usage:
 #   pts                  # run polytoken (TUI) in the sandbox
@@ -70,24 +84,97 @@ pts() {
     # overwritten on the next `pts` invocation.
     local state_dir="$workdir/.polytoken"
     local project_config="$state_dir/.config/polytoken/config.yaml"
-    local global_config_dir="$state_dir/.config/polytoken"
-    mkdir -p "$global_config_dir"
+    mkdir -p "$state_dir/.config/polytoken"
     cp "$HOME/.bashrc.d/polytoken-sandbox/config-template.yaml" "$project_config"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/AGENTS.md" "$global_config_dir/AGENTS.md"
-    mkdir -p "$global_config_dir/hooks"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks/ponytail-hook.sh" "$global_config_dir/hooks/ponytail-hook.sh"
-    chmod 755 "$global_config_dir/hooks/ponytail-hook.sh"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks.json" "$global_config_dir/hooks.json"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/config.json" "$global_config_dir/ponytail-config.json"
+
+    # Polytoken auto-discovers project context from a file named AGENTS.md
+    # in the project root (Claude Code's equivalent is CLAUDE.md). If a
+    # project already has a CLAUDE.md and no AGENTS.md yet, symlink one to
+    # the other so polytoken ingests the same context automatically on
+    # every run, instead of it needing to be re-explained each session.
+    # Never overwrites an AGENTS.md that's already there (hand-authored or
+    # from a previous run).
+    if [[ -f "$workdir/CLAUDE.md" && ! -e "$workdir/AGENTS.md" ]]; then
+        ln -s CLAUDE.md "$workdir/AGENTS.md"
+    fi
+
+    # Ensure the polytoken-binary volume exists and is owned by the
+    # invoking host user (rather than root/uid-0 in the rootless
+    # namespace), so the --userns=keep-id container can write the
+    # seeded/self-updated binary into it. Deliberately NOT world-writable
+    # (no chmod 1777 etc.): polytoken's own self-updater refuses to write
+    # into a group/world-writable directory as a TOCTOU safety check, so
+    # ownership — not permissive mode bits — is what has to grant the
+    # write access.
+    #
+    # The chown has to happen inside a *plain* rootless container (no
+    # --userns=keep-id), running as its default uid 0. Podman's default
+    # rootless mapping identity-maps container uid 0 to the real host uid,
+    # so `chown 0:0` there writes your real host uid to disk — which is
+    # exactly the uid a later --userns=keep-id container expects to see
+    # (keep-id identity-maps that same real host uid to itself). Using
+    # `podman unshare chown $(id -u)` instead is a common-looking but
+    # *wrong* fix here: podman unshare's own uid-0 identity-maps to the
+    # real host uid, but non-zero requested uids like $(id -u) get run
+    # through the subuid table instead, landing on some unrelated
+    # subordinate uid rather than your real one — it looked like it worked
+    # (no error) but silently produced a directory owned by the wrong uid.
+    # Cheap and idempotent, so it's safe to redo on every invocation.
+    local bin_volume="polytoken-sandbox-bin"
+    podman run --rm -v "$bin_volume:/opt/polytoken-bin" \
+        --entrypoint /bin/sh "$image" -c 'chown 0:0 /opt/polytoken-bin' >/dev/null
+
+    # Codex (OpenAI's device-code OAuth login, not a static API key — see
+    # config-template.yaml's `codex` provider) stores its auth token under
+    # Polytoken's global host data directory. Bind-mount that directory into
+    # the container so one `polytoken auth provider login` works both outside
+    # and inside pts. It is intentionally read/write because Polytoken may
+    # refresh the token; other auth/session state remains per-project.
+    local codex_auth_host_dir="$HOME/.local/share/polytoken/auth/codex"
+    local codex_auth_dir="$state_dir/.local/share/polytoken/auth/codex"
+    mkdir -p "$codex_auth_host_dir" "$codex_auth_dir"
+
+    # NineAngel ("angel") is a multi-persona code-review skill, adapted from
+    # github.com/PropterMalone/NineAngel (vendored as a pinned git submodule
+    # at angel/vendor/nineangel/, upstream's own Claude-Code-specific
+    # orchestration rewritten for polytoken's skill/subagent model — see
+    # angel/skills/angel/SKILL.md). It's made available in every project the
+    # same way as everything else here: a read-only bind mount, not a
+    # per-project copy. Unlike the codex-auth volume, nothing inside the
+    # container ever writes to these paths, so no named volume or ownership
+    # fix is needed — a plain read-only bind of the dotfiles-tracked
+    # directory is enough. This occupies polytoken's only discovery tier for
+    # subagents (project-local `.polytoken/subagents/`, no global tier
+    # exists) and skills' effectively-only-usable tier under pts's own HOME
+    # redirection — a project can't layer its own additional subagent
+    # alongside Angel's without further plumbing (accepted tradeoff).
+    # Angel's own per-project run/memory state (read-write, NOT mounted —
+    # this container writes here) lives under .polytoken/angel/.
+    local angel_skills_dir="$HOME/.bashrc.d/polytoken-sandbox/angel/skills"
+    local angel_subagents_dir="$HOME/.bashrc.d/polytoken-sandbox/angel/subagents"
+    mkdir -p "$state_dir/skills" "$state_dir/subagents" "$state_dir/angel/memory"
 
     # Only the invocation directory (which contains the polytoken state
-    # dir above), the read-only polytoken binary, and the job-digest
-    # secrets file are exposed — not the rest of $HOME.
+    # dir above), the polytoken-binary volume, and the job-digest secrets
+    # file are exposed — not the rest of $HOME.
+    #
+    # The host binary is mounted read-only too, but only as a seed source:
+    # the entrypoint below copies it into the named volume the first time
+    # the volume is empty, then always runs the volume's copy. If the host
+    # binary isn't installed, the seed mount is skipped and the volume must
+    # already be populated (e.g. from a previous run).
     local secrets_file="$HOME/.job_digest/secrets.json"
     local -a volumes=(
         -v "$workdir:$workdir"
-        -v "$HOME/.local/bin/polytoken:/usr/local/bin/polytoken:ro"
+        -v "polytoken-sandbox-bin:/opt/polytoken-bin"
+        -v "$codex_auth_host_dir:$codex_auth_dir"
+        -v "$angel_skills_dir:$state_dir/skills:ro"
+        -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
+    local host_binary="$HOME/.local/bin/polytoken"
+    if [[ -f "$host_binary" ]]; then
+        volumes+=(-v "$host_binary:/opt/polytoken-seed/polytoken:ro")
+    fi
     if [[ -f "$secrets_file" ]]; then
         volumes+=(-v "$secrets_file:$secrets_file:ro")
     fi
@@ -110,7 +197,7 @@ pts() {
     # every invocation, rather than trusting this shell's inherited env
     # vars — a long-lived shell can hold stale values from before a key
     # was rotated, since export only happens once at shell startup.
-    local -a _key_names=(OPENAI_API_KEY ANTHROPIC_API_KEY ZAI_API_KEY NEURALWATT_API_KEY BRAVE_API_KEY TAVILY_API_KEY EXA_API_KEY KAGI_API_KEY)
+    local -a _key_names=(OPENAI_API_KEY ANTHROPIC_API_KEY ZAI_API_KEY NEURALWATT_API_KEY OPENCODE_API_KEY BRAVE_API_KEY TAVILY_API_KEY EXA_API_KEY KAGI_API_KEY)
     local _k _v
     for _k in "${_key_names[@]}"; do
         _v="$(grep -oP "(?<=export ${_k}=\")[^\"]*" "$HOME/.bashrc" 2>/dev/null | tail -n1)"
@@ -128,23 +215,95 @@ pts() {
         gh_token="$(gh auth token 2>/dev/null)"
     fi
 
+    # Git identity for commits made inside the container. Wired via
+    # GIT_CONFIG_* rather than mounting the host's ~/.gitconfig, since
+    # $HOME inside the container points at the project's .polytoken/ dir
+    # instead. Hardcoded rather than read from `git config` each run.
+    local git_user_name="Will Wagner"
+    local git_user_email="willwagner602@users.noreply.github.com"
+
     local -a git_env=()
+    local -i _cfg_count=0
     if [[ -n "$gh_token" ]]; then
-        git_env=(
+        git_env+=(
             -e GH_TOKEN="$gh_token"
-            -e GIT_CONFIG_COUNT=2
-            -e GIT_CONFIG_KEY_0="credential.https://github.com.helper"
-            -e GIT_CONFIG_VALUE_0=""
-            -e GIT_CONFIG_KEY_1="credential.https://github.com.helper"
-            -e GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+            -e GIT_CONFIG_KEY_${_cfg_count}="credential.https://github.com.helper"
+            -e GIT_CONFIG_VALUE_${_cfg_count}=""
         )
+        ((_cfg_count++))
+        git_env+=(
+            -e GIT_CONFIG_KEY_${_cfg_count}="credential.https://github.com.helper"
+            -e GIT_CONFIG_VALUE_${_cfg_count}='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+        )
+        ((_cfg_count++))
     fi
+    if [[ -n "$git_user_name" ]]; then
+        git_env+=(
+            -e GIT_CONFIG_KEY_${_cfg_count}="user.name"
+            -e GIT_CONFIG_VALUE_${_cfg_count}="$git_user_name"
+        )
+        ((_cfg_count++))
+    fi
+    if [[ -n "$git_user_email" ]]; then
+        git_env+=(
+            -e GIT_CONFIG_KEY_${_cfg_count}="user.email"
+            -e GIT_CONFIG_VALUE_${_cfg_count}="$git_user_email"
+        )
+        ((_cfg_count++))
+    fi
+    if ((_cfg_count > 0)); then
+        git_env+=(-e GIT_CONFIG_COUNT="$_cfg_count")
+    fi
+
+    # The volume's copy of polytoken is what actually runs. If it's not
+    # there yet (first-ever run, or the volume was pruned), seed it from the
+    # host binary mount above. Once seeded, `pts update` self-updates this
+    # copy in place — the host binary is never touched or consulted again.
+    #
+    # Before actually launching the requested command, opportunistically
+    # check whether Codex (the default provider — see config-template.yaml)
+    # is logged in, and kick off its interactive device-code login if not.
+    # `polytoken auth provider status` always exits 0 regardless of auth
+    # state, so login-ness has to be sniffed from its text output rather
+    # than its exit code. Skipped for `pts auth ...` (avoid interfering
+    # with the user driving auth commands themselves, e.g. re-running login
+    # with --force) and `pts update` (self-update shouldn't be gated on an
+    # unrelated provider's auth). A failed/declined login doesn't abort
+    # `pts` — it just falls through to launching polytoken as usual, so
+    # non-Codex providers still work and the user can retry the login
+    # manually.
+    local seed_and_exec='
+set -e
+if [ ! -x /opt/polytoken-bin/polytoken ]; then
+    if [ -x /opt/polytoken-seed/polytoken ]; then
+        cp /opt/polytoken-seed/polytoken /opt/polytoken-bin/polytoken
+        chmod +x /opt/polytoken-bin/polytoken
+    else
+        echo "pts: /opt/polytoken-bin/polytoken not found in the sandbox volume, and no host binary at ~/.local/bin/polytoken to seed it from." >&2
+        exit 1
+    fi
+fi
+case "$1" in
+    auth|update) ;;
+    *)
+        codex_status="$(/opt/polytoken-bin/polytoken auth provider status --provider codex 2>&1)" || true
+        if echo "$codex_status" | grep -qi "not logged in"; then
+            echo "pts: Codex is not authenticated yet — starting device-code login..." >&2
+            /opt/polytoken-bin/polytoken auth provider login --provider codex || \
+                echo "pts: Codex login failed or was skipped; continuing anyway." >&2
+        fi
+        ;;
+esac
+exec /opt/polytoken-bin/polytoken "$@"
+'
 
     podman run --rm -it \
         --privileged \
-        --userns=keep-id \
+        --userns=keep-id:size=65536 \
         --security-opt label=disable \
         --network=host \
+        --device /dev/fuse \
+        --device /dev/net/tun \
         "${volumes[@]}" \
         -w "$workdir" \
         -e HOME="$state_dir" \
@@ -153,40 +312,13 @@ pts() {
         -e ANTHROPIC_API_KEY \
         -e ZAI_API_KEY \
         -e NEURALWATT_API_KEY \
+        -e OPENCODE_API_KEY \
         -e BRAVE_API_KEY \
         -e TAVILY_API_KEY \
         -e EXA_API_KEY \
         -e KAGI_API_KEY \
-        -e PONYTAIL_DEFAULT_MODE \
         "${git_env[@]}" \
-        --entrypoint /bin/bash \
+        --entrypoint /bin/sh \
         "$image" \
-        -lc 'export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
-              mkdir -p "$XDG_RUNTIME_DIR"
-              export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
-              # --storage-driver vfs --iptables=false --bridge=none: this
-              # host'"'"'s kernel has no ip_tables/ip6_tables NAT modules, so
-              # dockerd'"'"'s default bridge networking cannot register (fails
-              # with "modprobe: FATAL: Module ip_tables not found"). Every
-              # `docker run` therefore needs --network=host instead of a
-              # container-private network.
-              dockerd-rootless.sh --storage-driver vfs --iptables=false --bridge=none >/tmp/dockerd.log 2>&1 &
-              daemon_pid=$!
-              ready=0
-              for _ in {1..30}; do
-                  if docker info >/dev/null 2>&1; then
-                      ready=1
-                      break
-                  fi
-                  if ! kill -0 "$daemon_pid" 2>/dev/null; then
-                      break
-                  fi
-                  sleep 1
-              done
-              if [ "$ready" != 1 ]; then
-                  echo "pts: Docker daemon did not become ready; continuing without it (docker commands will fail)." >&2
-                  cat /tmp/dockerd.log >&2
-              fi
-              exec /usr/local/bin/polytoken "$@"' \
-        -- "$@"
+        -c "$seed_and_exec" sh "$@"
 }
