@@ -50,11 +50,7 @@ if [[ "$POLYTOKEN_HOOK_EVENT" == "pre_user_prompt" ]]; then
         "ponytail off"|"/ponytail off"|"@ponytail off"|"stop ponytail"|"normal mode") mode=off ;;
         *) jq -cn '{outcome:"accept"}' ; exit 0 ;;
     esac
-    if [[ "$mode" == off ]]; then
-        rm -f "$mode_file"
-    else
-        printf '%s\n' "$mode" >"$mode_file"
-    fi
+    printf '%s\n' "$mode" >"$mode_file"
     jq -cn --arg mode "$mode" '{outcome:"accept", additional_context:("PONYTAIL MODE CHANGED — level: " + $mode)}'
     exit 0
 fi

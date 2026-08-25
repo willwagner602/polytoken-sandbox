@@ -45,7 +45,7 @@ Lazy code without its check is unfinished. Non-trivial logic must leave one runn
 
 ## Additional host filesystem available in pts
 
-The `pts` launcher can mount the host directory `/home/will/work/docker_files` at the same path, read/write, only when the project lists it in `.polytoken/volumes` and the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1`. Agents running inside Polytoken can inspect and modify files there directly when that opt-in is active. This is an intentional exception to the default filesystem isolation; do not assume other host paths are available.
+The `pts` launcher can mount the host directory `/home/will/work/docker_files` at the same path, read/write, only when the project lists it in `.polytoken/volumes` and the operator interactively confirms that file (once per approved content — editing the file afterward requires re-approval). Agents running inside Polytoken can inspect and modify files there directly once that confirmation has been given. This is an intentional exception to the default filesystem isolation; do not assume other host paths are available.
 
 ## Docker inside the Polytoken sandbox
 

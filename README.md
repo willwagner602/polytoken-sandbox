@@ -7,17 +7,18 @@ networking, devices, selected credentials, and disabled SELinux labels. Only
 the invocation directory and explicitly approved additional mounts are exposed
 from the host filesystem; the rest of `$HOME` is not mounted by default.
 
-A repository's `.polytoken/volumes` file is ignored unless the operator opts in
-for that invocation with `PTS_ALLOW_PROJECT_VOLUMES=1` after reviewing every
-mount specification. Extra mounts are passed directly to Podman and can grant
-broad host access, so do not enable them for untrusted projects.
+A repository's `.polytoken/volumes` (and `.polytoken/Containerfile`) is ignored
+until the operator interactively confirms it — approval is pinned to a sha256
+of the file's content, so editing it afterward requires re-approval rather than
+silently reusing the old decision. Extra mounts are passed directly to Podman
+and can grant broad host access, so only approve files from projects you trust.
 
 ## Contents
 
 - `polytoken-sandbox.sh` — the `pts` shell function (copy of the version
   sourced from `~/.bashrc.d/` — see setup below)
 - `Containerfile` — builds `localhost/polytoken-sandbox:latest`
-  (fedora-minimal + python3, pip, pytest, git, gh)
+  (fedora-minimal + Python tooling, git, gh, Node/npm, Codex CLI, and container tools)
 - `config-template.yaml` — secret-free polytoken config seeded into every
   new project's `.polytoken/` state dir on first run. Provider keys use
   env-var interpolation (`${OPENAI_API_KEY}`, etc.) — no literal secrets.
