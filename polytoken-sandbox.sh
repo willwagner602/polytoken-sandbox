@@ -33,6 +33,22 @@
 #
 # Requirements: podman installed and configured for rootless use.
 
+# Copies Ponytail's hook script, hook wiring, and default-mode config into
+# the per-project polytoken config dir, plus this repo's own root AGENTS.md
+# (the "lazy senior dev" instructions the hook injects). Extracted from
+# pts() so it can be exercised directly against a scratch directory in
+# ponytail/tests/test_sandbox_staging.sh without needing podman.
+_pts_stage_ponytail() {
+    local global_config_dir="$1"
+    mkdir -p "$global_config_dir"
+    cp "$HOME/.bashrc.d/polytoken-sandbox/AGENTS.md" "$global_config_dir/AGENTS.md"
+    mkdir -p "$global_config_dir/hooks"
+    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks/ponytail-hook.sh" "$global_config_dir/hooks/ponytail-hook.sh"
+    chmod 755 "$global_config_dir/hooks/ponytail-hook.sh"
+    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks.json" "$global_config_dir/hooks.json"
+    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/config.json" "$global_config_dir/ponytail-config.json"
+}
+
 pts() {
     if ! command -v podman &>/dev/null; then
         echo "Error: podman is not installed or not on PATH" >&2
@@ -83,9 +99,11 @@ pts() {
     # directories. Do not hand-edit a project's config.yaml — it's
     # overwritten on the next `pts` invocation.
     local state_dir="$workdir/.polytoken"
-    local project_config="$state_dir/.config/polytoken/config.yaml"
-    mkdir -p "$state_dir/.config/polytoken"
+    local global_config_dir="$state_dir/.config/polytoken"
+    local project_config="$global_config_dir/config.yaml"
+    mkdir -p "$global_config_dir"
     cp "$HOME/.bashrc.d/polytoken-sandbox/config-template.yaml" "$project_config"
+    _pts_stage_ponytail "$global_config_dir"
 
     # Polytoken auto-discovers project context from a file named AGENTS.md
     # in the project root (Claude Code's equivalent is CLAUDE.md). If a
@@ -321,6 +339,7 @@ exec /opt/polytoken-bin/polytoken "$@"
         -e TAVILY_API_KEY \
         -e EXA_API_KEY \
         -e KAGI_API_KEY \
+        -e PONYTAIL_DEFAULT_MODE \
         "${git_env[@]}" \
         --entrypoint /bin/sh \
         "$image" \
