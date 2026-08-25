@@ -10,6 +10,7 @@ The shared image is built from `quay.io/fedora/fedora-minimal:latest` and instal
 - Git, GitHub CLI (`gh`), `jq`, Go, and ZIP tools
 - Node.js and npm
 - `yaml-language-server`, exposed as `/usr/local/bin/yamlls` for Polytoken LSP discovery
+- OpenAI Codex CLI, installed as the `codex` command
 - Podman and Docker tooling
 - Browser/runtime libraries, PDF utilities, networking tools, and process utilities
 
@@ -40,22 +41,26 @@ By default, PTS exposes only these host paths:
 | `~/.bashrc.d/polytoken-sandbox/angel/skills/` | `$HOME/skills/` | Read-only | Angel skills |
 | `~/.bashrc.d/polytoken-sandbox/angel/subagents/` | `$HOME/subagents/` | Read-only | Angel subagents |
 | `~/.job_digest/secrets.json` | Same absolute path | Read-only, if present | Job-digest credentials/data |
+| `~/.codex/` | `$HOME/.codex/` | Read/write | OpenAI Codex CLI ChatGPT/subscription login and CLI state |
 
-The rest of the host home directory is **not** mounted. In particular, the container does not automatically receive the host's shell configuration, Git configuration, SSH keys, Codex CLI state, caches, or unrelated personal files. The Codex entry above is Polytoken's own auth store, not Codex CLI's separate `~/.codex` directory.
+The rest of the host home directory is **not** mounted. In particular, the container does not automatically receive the host's shell configuration, Git configuration, SSH keys, caches, or unrelated personal files. The table above has two distinct, deliberate Codex-related exceptions: Polytoken's own Codex provider auth store, and the separate OpenAI Codex CLI's `~/.codex` state.
 
-Projects can request additional mounts using `.polytoken/volumes`, but PTS refuses to read that file unless the operator explicitly opts in for the invocation:
+A project can also request additional mounts via `.polytoken/volumes` or extend the shared image via `.polytoken/Containerfile`. Since these files are project-controlled, PTS gates both behind one-time interactive confirmation before building or mounting either — without this, a cloned (or otherwise untrusted) repo could silently escalate to arbitrary host access the moment `pts` runs inside it:
 
-```bash
-PTS_ALLOW_PROJECT_VOLUMES=1 pts
+```text
+pts: /path/to/project/.polytoken/volumes will have every line bind-mounted verbatim into this --privileged container
+pts: trust and apply this file? [y/N]
 ```
 
-After reviewing the file, it contains one Podman `-v`-style mount specification per line, for example:
+Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
+
+After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line, for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
 ```
 
-These mounts are passed through as written after the explicit opt-in. They can expose arbitrary host paths or writable destinations, so do not enable them for untrusted projects.
+These mounts are passed through as written once approved. They can expose arbitrary host paths or writable destinations, so only approve files from projects you trust.
 
 ## Project layout and persistence
 
@@ -98,7 +103,7 @@ Container:  $HOME/.local/share/polytoken/auth/codex/
 Mode:       read/write
 ```
 
-This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. It does not mount Codex CLI's separate `~/.codex` directory.
+This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. The OpenAI Codex CLI is a separate tool: its `~/.codex/` state is mounted independently so `codex login` and ChatGPT/subscription authentication can be reused inside PTS. The two auth stores must not be conflated.
 
 ## Nested containers and Docker
 

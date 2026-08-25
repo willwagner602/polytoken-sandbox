@@ -54,3 +54,10 @@ if ((fail == 0)); then
 else
     exit 1
 fi
+
+# The shared image must provide the Codex CLI, and pts must expose the host
+# Codex state separately from Polytoken's provider auth store.
+grep -Fq -- '@openai/codex' "$repo_dir/Containerfile"
+grep -Fq -- 'local codex_cli_host_dir="$HOME/.codex"' "$repo_dir/polytoken-sandbox.sh"
+grep -Fq -- '-v "$codex_cli_host_dir:$codex_cli_dir"' "$repo_dir/polytoken-sandbox.sh"
+printf 'Codex container contract checks passed\n'

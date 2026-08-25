@@ -187,6 +187,14 @@ pts() {
     local codex_auth_dir="$state_dir/.local/share/polytoken/auth/codex"
     mkdir -p "$codex_auth_host_dir" "$codex_auth_dir"
 
+    # OpenAI Codex CLI keeps its ChatGPT/subscription login and CLI state in
+    # ~/.codex. Mount the host directory into the container's effective HOME
+    # so `codex` can reuse and refresh the host login across PTS projects.
+    # This is separate from Polytoken's auth store above.
+    local codex_cli_host_dir="$HOME/.codex"
+    local codex_cli_dir="$state_dir/.codex"
+    mkdir -p "$codex_cli_host_dir" "$codex_cli_dir"
+
     # NineAngel ("angel") is a multi-persona code-review skill, adapted from
     # github.com/PropterMalone/NineAngel (vendored as a pinned git submodule
     # at angel/vendor/nineangel/, upstream's own Claude-Code-specific
@@ -221,6 +229,7 @@ pts() {
         -v "$workdir:$workdir"
         -v "polytoken-sandbox-bin:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
+        -v "$codex_cli_host_dir:$codex_cli_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )

@@ -31,16 +31,16 @@ Running `pts` from a project directory follows this shape:
 4. Copy the template configuration, agent instructions, Ponytail hook, and Ponytail configuration into the project’s `.polytoken/` directory.
 5. Mount the current project directory read/write.
 6. Mount the shared `polytoken-sandbox-bin` volume at `/opt/polytoken-bin`; optionally mount `~/.local/bin/polytoken` read-only as `/opt/polytoken-seed/polytoken` for first-run seeding.
-7. Mount Polytoken's global Codex auth directory read/write and the Angel skills/subagents read-only.
-8. Optionally mount `~/.job_digest/secrets.json` read-only. Read `.polytoken/volumes` only when the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1`; pass reviewed entries through as Podman `-v` arguments.
+7. Mount Polytoken's global Codex provider auth directory read/write, the host `~/.codex/` directory read/write for the OpenAI Codex CLI (separate from Polytoken's own Codex provider auth store), and the Angel skills/subagents read-only.
+8. Optionally mount `~/.job_digest/secrets.json` read-only. A project-local `.polytoken/Containerfile` or `.polytoken/volumes` each require one-time interactive confirmation — pinned to a sha256 of that file's content, so editing it after approval re-prompts — before being built or mounted; declined or unconfirmed files are skipped for that run.
 9. Refresh provider credentials from the host shell configuration and pass them as environment variables.
-10. Launch Polytoken through the image's nested-container-capable runtime. The current launcher does not start a Docker daemon or set `DOCKER_HOST`; Docker-dependent workflows must provide and verify their own daemon endpoint.
+10. Launch Polytoken through the image's nested-container-capable runtime, opportunistically starting Codex's device-code login first if it isn't already authenticated. The current launcher does not start a Docker daemon or set `DOCKER_HOST`; Docker-dependent workflows must provide and verify their own daemon endpoint.
 
 The container uses host networking so model APIs and deliberately nested container workloads can reach the network. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, FUSE/TUN devices, and host networking. These are trusted-workflow prerequisites for nested-container tooling, not a hostile-code security boundary.
 
 ## Filesystem and state model
 
-Only the invocation directory and explicitly selected files are exposed to the container; the host home directory is not generally mounted. The container’s `HOME` is the project’s `.polytoken` directory, so Polytoken configuration, cache, authentication, and session data persist per project. Additional paths such as `/home/will/work/docker_files` are available only when explicitly listed in `.polytoken/volumes` and the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1`.
+Only the invocation directory and explicitly selected files are exposed to the container; the host home directory is not generally mounted. The container’s `HOME` is the project’s `.polytoken` directory, so Polytoken configuration, cache, authentication, and session data persist per project. Additional paths such as `/home/will/work/docker_files` are available only when explicitly listed in `.polytoken/volumes`, and only after the operator interactively confirms that file (confirmation is pinned to a sha256 of its content, so a later edit requires re-approval rather than silently inheriting the old decision).
 
 The project state directory may contain sensitive session history and device-auth material. Projects should add `.polytoken/` to `.gitignore`. The generated `config.yaml` contains provider references such as `${OPENAI_API_KEY}`, not literal API keys, and is overwritten from the template on each `pts` invocation.
 
@@ -61,7 +61,7 @@ The repository does not install a project’s Playwright package or browser bund
 
 ## Extension points and constraints
 
-A project can commit `.polytoken/Containerfile` to extend the shared image with project-specific packages. It can also commit `.polytoken/volumes` for deliberate additional `-v` mounts, one mount specification per line. PTS refuses to read that file unless the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1` for the invocation after reviewing the entries; the reviewed entries are passed through unchanged.
+A project can commit `.polytoken/Containerfile` to extend the shared image with project-specific packages. It can also commit `.polytoken/volumes` for deliberate additional `-v` mounts, one mount specification per line. Both are gated behind one-time interactive confirmation, pinned to a sha256 of the file's content: PTS prompts before building or mounting either for the first time, and again whenever the file's content changes — a plain "trusted this project" flag would miss a benign version being approved once and then swapped for something malicious later. Declining, or running non-interactively with no input available, skips the file for that invocation rather than failing or auto-approving.
 
 Keep changes minimal and image-level when a dependency is shared by all sandboxed projects. Do not add application substitutes for canonical workflows without verification. When changing `Containerfile`, the launcher’s content hash causes the shared image to rebuild automatically on the next `pts` invocation.
 
