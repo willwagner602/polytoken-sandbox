@@ -185,6 +185,10 @@ pts() {
     # -v`. Only used when present, so this is opt-in per project.
     local project_volumes="$workdir/.polytoken/volumes"
     if [[ -f "$project_volumes" ]]; then
+        if [[ "${PTS_ALLOW_PROJECT_VOLUMES:-}" != 1 ]]; then
+            echo "Error: $project_volumes requests host mounts; review it and rerun with PTS_ALLOW_PROJECT_VOLUMES=1" >&2
+            return 1
+        fi
         local _volume_line
         while IFS= read -r _volume_line || [[ -n "$_volume_line" ]]; do
             [[ -z "$_volume_line" ]] && continue

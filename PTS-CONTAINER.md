@@ -1,6 +1,6 @@
 # PTS Container Environment
 
-`pts` is a shell function that runs Polytoken inside a rootless Podman container. It provides a repeatable Fedora-based development environment while limiting the container's access to the host filesystem.
+`pts` is a shell function that runs Polytoken inside a rootless Podman container. It provides a repeatable Fedora-based development environment with project-oriented filesystem isolation. PTS is intended for trusted projects, not hostile code: nested-container support uses privileged execution, host networking, devices, selected credentials, and disabled SELinux labels.
 
 ## What the container provides
 
@@ -26,7 +26,7 @@ PTS launches the image with:
 - `HOME` redirected to `<project>/.polytoken`
 - `--rm`, so the application container itself is removed after exit; persistent state is stored in bind mounts and project files
 
-The host Polytoken binary is mounted read-only at `/usr/local/bin/polytoken`. Updating the host binary therefore takes effect without rebuilding the image.
+The host Polytoken binary is mounted read-only at `/opt/polytoken-seed/polytoken` when present. On the first run, PTS copies it into the shared `polytoken-sandbox-bin` volume and executes `/opt/polytoken-bin/polytoken` from then on. Run `pts update` to update that persistent copy; changing the host binary alone does not replace an existing volume copy.
 
 ## Host filesystem access
 
@@ -35,18 +35,27 @@ By default, PTS exposes only these host paths:
 | Host path | Container path | Mode | Purpose |
 |---|---|---|---|
 | Current working directory | Same absolute path | Read/write | Project files and Polytoken state |
-| `~/.local/bin/polytoken` | `/usr/local/bin/polytoken` | Read-only | Polytoken executable |
+| `~/.local/bin/polytoken` | `/opt/polytoken-seed/polytoken` | Read-only, if present | Initial source for the shared Polytoken binary volume |
+| `~/.local/share/polytoken/auth/codex/` | `$HOME/.local/share/polytoken/auth/codex/` | Read/write | Shared Polytoken Codex auth and token refresh |
+| `~/.bashrc.d/polytoken-sandbox/angel/skills/` | `$HOME/skills/` | Read-only | Angel skills |
+| `~/.bashrc.d/polytoken-sandbox/angel/subagents/` | `$HOME/subagents/` | Read-only | Angel subagents |
 | `~/.job_digest/secrets.json` | Same absolute path | Read-only, if present | Job-digest credentials/data |
 
-The rest of the host home directory is **not** mounted. In particular, the container does not automatically receive the host's shell configuration, Git configuration, SSH keys, Codex CLI state, caches, or unrelated personal files.
+The rest of the host home directory is **not** mounted. In particular, the container does not automatically receive the host's shell configuration, Git configuration, SSH keys, Codex CLI state, caches, or unrelated personal files. The Codex entry above is Polytoken's own auth store, not Codex CLI's separate `~/.codex` directory.
 
-Projects can opt into additional mounts using `.polytoken/volumes`. It contains one Podman `-v`-style mount specification per line, for example:
+Projects can request additional mounts using `.polytoken/volumes`, but PTS refuses to read that file unless the operator explicitly opts in for the invocation:
+
+```bash
+PTS_ALLOW_PROJECT_VOLUMES=1 pts
+```
+
+After reviewing the file, it contains one Podman `-v`-style mount specification per line, for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
 ```
 
-These mounts are passed through as written and are therefore an explicit trust decision by the project/user.
+These mounts are passed through as written after the explicit opt-in. They can expose arbitrary host paths or writable destinations, so do not enable them for untrusted projects.
 
 ## Project layout and persistence
 
@@ -93,19 +102,9 @@ This permits one `polytoken auth provider login --provider codex` to serve both 
 
 ## Nested containers and Docker
 
-The PTS image includes Docker and Podman tooling so agents can run container commands inside the sandbox. The launcher can start a Docker daemon inside the PTS container, using a temporary runtime/data layout:
+The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The current launcher does **not** start a Docker daemon, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. Docker-dependent workflows must provide and verify their own daemon endpoint; do not assume that `docker info` will succeed merely because the client is installed.
 
-```text
-/tmp/run-0/docker.sock
-/tmp/docker-data/
-/tmp/docker-exec/
-/tmp/docker-cli-config/
-/tmp/dockerd.log
-```
-
-The daemon uses a VFS storage driver, disables iptables, and has no Docker bridge. Nested containers that need network access should use host networking. Docker state is ephemeral unless a project explicitly mounts or persists it.
-
-The project-local compatibility path `.polytoken/.docker/run/docker.sock` may point at the active daemon socket. Docker environment variables are set so Polytoken tools use the nested daemon rather than a host Docker socket.
+The outer container uses host networking and privileged execution because nested-container workflows may require them. This is part of the trusted-project boundary, not a promise that the outer container isolates hostile code.
 
 ## Optional project extensions
 

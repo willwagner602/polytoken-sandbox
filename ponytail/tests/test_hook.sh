@@ -28,3 +28,9 @@ result="$(jq -cn '{prompt:"ponytail off"}' | bash "$root/hooks/ponytail-hook.sh"
 [[ ! -e "$HOME/.config/polytoken/ponytail/mode" ]]
 
 printf 'Ponytail hook checks passed\n'
+
+# PTS must not honor repository-controlled host mounts without an explicit
+# operator opt-in. Keep this contract check cheap and independent of Podman.
+grep -Fq 'if [[ "${PTS_ALLOW_PROJECT_VOLUMES:-}" != 1 ]]; then' "$root/../polytoken-sandbox.sh"
+grep -Fq 'rerun with PTS_ALLOW_PROJECT_VOLUMES=1' "$root/../polytoken-sandbox.sh"
+printf 'PTS mount opt-in contract check passed\n'

@@ -1,11 +1,16 @@
 # polytoken-sandbox
 
-Runs [polytoken](https://github.com) inside a rootless podman container for
-filesystem isolation. Only the invocation directory, the explicitly approved
-`/home/will/work/docker_files` directory, and `~/.job_digest/secrets.json` are
-exposed to the container — not the rest of `$HOME` — while keeping full network
-access. The approved Docker-files directory is available at the same path
-inside the sandbox and is read/write.
+Runs [polytoken](https://github.com) inside a rootless Podman container for
+project-oriented filesystem isolation. PTS is intended for trusted projects,
+not hostile code: nested-container support uses privileged execution, host
+networking, devices, selected credentials, and disabled SELinux labels. Only
+the invocation directory and explicitly approved additional mounts are exposed
+from the host filesystem; the rest of `$HOME` is not mounted by default.
+
+A repository's `.polytoken/volumes` file is ignored unless the operator opts in
+for that invocation with `PTS_ALLOW_PROJECT_VOLUMES=1` after reviewing every
+mount specification. Extra mounts are passed directly to Podman and can grant
+broad host access, so do not enable them for untrusted projects.
 
 ## Contents
 
@@ -41,9 +46,10 @@ inside the sandbox and is read/write.
    source ~/.bashrc.d/polytoken-sandbox.sh
    ```
 
-3. Make sure `~/.local/bin/polytoken` exists (the container mounts the host
-   binary read-only, so updating polytoken on the host automatically
-   updates the sandboxed version — no image rebuild needed).
+3. Make sure `~/.local/bin/polytoken` exists. PTS seeds the shared
+   `polytoken-sandbox-bin` volume from this binary on first use; later runs use
+   the volume's persistent copy. Run `pts update` to update that copy (no image
+   rebuild is needed).
 
 4. Run `pts` from any project directory. The image builds automatically on
    first run and is cached thereafter. Rebuild manually after editing the
