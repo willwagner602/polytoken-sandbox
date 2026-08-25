@@ -25,7 +25,15 @@ done
 
 result="$(jq -cn '{prompt:"ponytail off"}' | bash "$root/hooks/ponytail-hook.sh")"
 [[ "$(jq -r .outcome <<<"$result")" == accept ]]
-[[ ! -e "$HOME/.config/polytoken/ponytail/mode" ]]
+[[ "$(<"$HOME/.config/polytoken/ponytail/mode")" == off ]]
+
+# Regression: off must persist across the NEXT hook call too — a prior bug
+# deleted the mode file instead of writing "off", so the next pre_model_turn
+# silently fell back to the configured default and re-injected full mode.
+export POLYTOKEN_HOOK_EVENT=pre_model_turn
+result="$(bash "$root/hooks/ponytail-hook.sh")"
+[[ "$(jq -r .outcome <<<"$result")" == proceed ]]
+[[ "$(jq -r 'has("additional_context")' <<<"$result")" == false ]]
 
 printf 'Ponytail hook checks passed\n'
 
