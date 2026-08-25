@@ -37,8 +37,11 @@ result="$(bash "$root/hooks/ponytail-hook.sh")"
 
 printf 'Ponytail hook checks passed\n'
 
-# PTS must not honor repository-controlled host mounts without an explicit
-# operator opt-in. Keep this contract check cheap and independent of Podman.
-grep -Fq 'if [[ "${PTS_ALLOW_PROJECT_VOLUMES:-}" != 1 ]]; then' "$root/../polytoken-sandbox.sh"
-grep -Fq 'rerun with PTS_ALLOW_PROJECT_VOLUMES=1' "$root/../polytoken-sandbox.sh"
-printf 'PTS mount opt-in contract check passed\n'
+# PTS must not honor repository-controlled host mounts (.polytoken/volumes)
+# or a repository-controlled build (.polytoken/Containerfile) without going
+# through the trust-confirmation gate first. Keep this contract check cheap
+# and independent of Podman; the gate's actual behavior is covered in depth
+# by test_trust_gate.sh.
+grep -Fq '_pts_confirm_trust "$project_volumes"' "$root/../polytoken-sandbox.sh"
+grep -Fq '_pts_confirm_trust "$project_containerfile"' "$root/../polytoken-sandbox.sh"
+printf 'PTS mount/build trust-gate contract check passed\n'

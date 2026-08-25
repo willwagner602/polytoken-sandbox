@@ -49,6 +49,40 @@ _pts_stage_ponytail() {
     cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/config.json" "$global_config_dir/ponytail-config.json"
 }
 
+# Gates a project-local `.polytoken/` extension file (Containerfile or
+# volumes) behind one-time interactive confirmation before it's built/mounted
+# — without this, cloning an untrusted repo and running `pts` inside it lets
+# that repo silently extend the image or bind-mount arbitrary host paths
+# (e.g. a `.polytoken/volumes` line of `/:/hostroot`) into an already
+# --privileged container with live API keys and a GitHub token. Approval is
+# pinned to a sha256 of the file's content, not just "this project", in a
+# marker alongside it — so editing the file after approval (a supply-chain
+# swap: get a benign version trusted once, then change it) re-prompts rather
+# than silently inheriting the old trust decision. Markers live under
+# `.polytoken/` (gitignored, per-project, never committed).
+_pts_confirm_trust() {
+    local target_file="$1" reason="$2"
+    local trust_marker="$target_file.trusted-sha256"
+    local current_hash
+    current_hash="$(sha256sum "$target_file" | cut -d' ' -f1)"
+    if [[ -f "$trust_marker" && "$(<"$trust_marker")" == "$current_hash" ]]; then
+        return 0
+    fi
+    echo "pts: $target_file $reason" >&2
+    # Bounded, not unconditional: EOF (piped/closed stdin) returns immediately
+    # (declined); a genuinely interactive terminal gets up to 30s to answer;
+    # an inherited-but-silent stream (e.g. backgrounded invocation) times out
+    # rather than hanging forever.
+    local reply=""
+    read -r -t 30 -p "pts: trust and apply this file? [y/N] " reply || true
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+        printf '%s\n' "$current_hash" >"$trust_marker"
+        return 0
+    fi
+    echo "pts: not trusted — skipping $target_file for this run." >&2
+    return 1
+}
+
 pts() {
     if ! command -v podman &>/dev/null; then
         echo "Error: podman is not installed or not on PATH" >&2
@@ -81,7 +115,8 @@ pts() {
     #   podman build -t localhost/polytoken-sandbox-<dirname>:latest -f .polytoken/Containerfile .polytoken
     local image="$base_image"
     local project_containerfile="$workdir/.polytoken/Containerfile"
-    if [[ -f "$project_containerfile" ]]; then
+    if [[ -f "$project_containerfile" ]] && _pts_confirm_trust "$project_containerfile" \
+        "will be built and used as this project's sandbox image"; then
         image="localhost/polytoken-sandbox-$(basename "$workdir"):latest"
         if ! podman image exists "$image" 2>/dev/null; then
             echo "Building project sandbox image (one-time setup)..." >&2
@@ -202,11 +237,8 @@ pts() {
     # line (HOST:CONTAINER[:OPTS]), passed straight through to `podman run
     # -v`. Only used when present, so this is opt-in per project.
     local project_volumes="$workdir/.polytoken/volumes"
-    if [[ -f "$project_volumes" ]]; then
-        if [[ "${PTS_ALLOW_PROJECT_VOLUMES:-}" != 1 ]]; then
-            echo "Error: $project_volumes requests host mounts; review it and rerun with PTS_ALLOW_PROJECT_VOLUMES=1" >&2
-            return 1
-        fi
+    if [[ -f "$project_volumes" ]] && _pts_confirm_trust "$project_volumes" \
+        "will have every line bind-mounted verbatim into this --privileged container"; then
         local _volume_line
         while IFS= read -r _volume_line || [[ -n "$_volume_line" ]]; do
             [[ -z "$_volume_line" ]] && continue
