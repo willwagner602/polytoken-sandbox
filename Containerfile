@@ -1,5 +1,8 @@
 FROM quay.io/fedora/fedora-minimal:latest
-RUN microdnf install -y python3 python3-pip python3-pytest git gh jq golang zip nspr nss alsa-lib atk cups-libs gtk3 libXcomposite libXdamage libXfixes libXrandr mesa-libgbm pango podman docker docker-cli moby-engine nodejs npm poppler-utils iproute procps-ng && microdnf clean all
+RUN microdnf install -y python3 python3-pip python3-pytest git gh jq golang zip nspr nss alsa-lib atk cups-libs gtk3 libXcomposite libXdamage libXfixes libXrandr mesa-libgbm pango podman docker docker-cli moby-engine nodejs npm poppler-utils iproute procps-ng && \
+    npm install --global yaml-language-server && \
+    ln -s "$(command -v yaml-language-server)" /usr/local/bin/yamlls && \
+    microdnf clean all
 
 # Nested podman/docker (running `podman`/`docker` inside pts's own container)
 # need to create a further user-namespace mapping for whatever container
