@@ -1,9 +1,11 @@
 # polytoken-sandbox
 
 Runs [polytoken](https://github.com) inside a rootless podman container for
-filesystem isolation. Only the invocation directory and
-`~/.job_digest/secrets.json` are exposed to the container — not the rest of
-`$HOME` — while keeping full network access.
+filesystem isolation. Only the invocation directory, the explicitly approved
+`/home/will/work/docker_files` directory, and `~/.job_digest/secrets.json` are
+exposed to the container — not the rest of `$HOME` — while keeping full network
+access. The approved Docker-files directory is available at the same path
+inside the sandbox and is read/write.
 
 ## Contents
 
