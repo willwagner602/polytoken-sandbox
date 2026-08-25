@@ -2,19 +2,19 @@
 
 ## Purpose
 
-This repository defines the local `pts` wrapper used to run Polytoken inside a rootless Podman sandbox. Its primary goals are:
+This repository defines the local `pts` wrapper used to run Polytoken inside a rootless Podman container. Its primary goals are:
 
-- isolate the Polytoken process from the host filesystem and home directory;
+- provide project-oriented filesystem isolation for trusted projects (not a hostile-code security boundary);
 - provide a repeatable Fedora-based tool environment;
 - keep Polytoken state scoped to the project being worked on;
 - pass provider credentials without copying literal secrets into project configuration; and
 - support workflows that need a nested Docker daemon, Chromium/Playwright libraries, or PDF utilities.
 
-This is infrastructure around Polytoken, not the Polytoken application source. The Polytoken executable is supplied by the host and mounted read-only into the sandbox.
+This is infrastructure around Polytoken, not the Polytoken application source. The host executable is mounted read-only as an optional seed at `/opt/polytoken-seed/polytoken`, copied into the shared `polytoken-sandbox-bin` volume on first use, and then executed from `/opt/polytoken-bin/polytoken`. Run `pts update` to update the persistent copy.
 
 ## Repository contents
 
-- `polytoken-sandbox.sh` — defines the `pts` shell function. It builds/selects the image, prepares project state, mounts approved paths, starts the nested Docker daemon, and launches Polytoken.
+- `polytoken-sandbox.sh` — defines the `pts` shell function. It builds/selects the image, prepares project state, mounts approved paths, and launches Polytoken with the nested-container runtime prerequisites.
 - `Containerfile` — defines the shared Fedora sandbox image. It installs the command-line, development, container, Chromium/Playwright, and PDF runtime dependencies.
 - `config-template.yaml` — secret-free Polytoken configuration copied into each project state directory on every launch.
 - `AGENTS.md` — instructions copied into the effective Polytoken configuration so future agents understand repository conventions and the sandbox Docker environment.
@@ -30,37 +30,25 @@ Running `pts` from a project directory follows this shape:
 3. If the project has `.polytoken/Containerfile`, build/use its project-specific image instead.
 4. Copy the template configuration, agent instructions, Ponytail hook, and Ponytail configuration into the project’s `.polytoken/` directory.
 5. Mount the current project directory read/write.
-6. Mount `~/.local/bin/polytoken` read-only as `/usr/local/bin/polytoken`.
-7. Mount the explicitly approved host directory `/home/will/work/docker_files` at the same path, read/write, via `.polytoken/volumes`.
-8. Optionally mount `~/.job_digest/secrets.json` read-only and any other explicit mounts listed in `.polytoken/volumes`.
+6. Mount the shared `polytoken-sandbox-bin` volume at `/opt/polytoken-bin`; optionally mount `~/.local/bin/polytoken` read-only as `/opt/polytoken-seed/polytoken` for first-run seeding.
+7. Mount Polytoken's global Codex auth directory read/write and the Angel skills/subagents read-only.
+8. Optionally mount `~/.job_digest/secrets.json` read-only. Read `.polytoken/volumes` only when the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1`; pass reviewed entries through as Podman `-v` arguments.
 9. Refresh provider credentials from the host shell configuration and pass them as environment variables.
-10. Start a Docker daemon as the privileged sandbox root, wait for `docker info`, and then run Polytoken as the project user.
+10. Launch Polytoken through the image's nested-container-capable runtime. The current launcher does not start a Docker daemon or set `DOCKER_HOST`; Docker-dependent workflows must provide and verify their own daemon endpoint.
 
-The container uses host networking so model APIs and nested container workloads can reach the network. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, and host networking because the nested Docker daemon setup requires those capabilities in this environment.
+The container uses host networking so model APIs and deliberately nested container workloads can reach the network. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, FUSE/TUN devices, and host networking. These are trusted-workflow prerequisites for nested-container tooling, not a hostile-code security boundary.
 
 ## Filesystem and state model
 
-Only the invocation directory and explicitly selected files are exposed to the container; the host home directory is not generally mounted. The approved `/home/will/work/docker_files` directory is an intentional read/write exception and is visible at the same path inside the sandbox. The container’s `HOME` is the project’s `.polytoken` directory, so Polytoken configuration, cache, authentication, and session data persist per project.
+Only the invocation directory and explicitly selected files are exposed to the container; the host home directory is not generally mounted. The container’s `HOME` is the project’s `.polytoken` directory, so Polytoken configuration, cache, authentication, and session data persist per project. Additional paths such as `/home/will/work/docker_files` are available only when explicitly listed in `.polytoken/volumes` and the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1`.
 
 The project state directory may contain sensitive session history and device-auth material. Projects should add `.polytoken/` to `.gitignore`. The generated `config.yaml` contains provider references such as `${OPENAI_API_KEY}`, not literal API keys, and is overwritten from the template on each `pts` invocation.
 
 ## Nested Docker
 
-The launcher starts `dockerd` as the privileged sandbox root inside the sandbox. It sets:
+The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows. The current launcher does not start `dockerd`, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. Docker-dependent workflows must provide and verify their own daemon endpoint.
 
-```text
-XDG_RUNTIME_DIR=/tmp/run-0
-DOCKER_HOST=unix:///tmp/run-0/docker.sock
-```
-
-The daemon uses `vfs` storage and disables iptables and Docker bridge networking because the host kernel does not provide the required NAT modules. Docker-dependent agents should:
-
-```bash
-docker info
-docker run --network=host ...
-```
-
-Do not start a second daemon or assume the host Docker socket is available. If startup fails, inspect `/tmp/dockerd.log`. The launcher currently continues into Polytoken after a Docker timeout, so Docker-dependent work must verify readiness explicitly.
+Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS: the container does not run systemd and does not expose the host socket. The outer container remains privileged and host-networked because those are retained prerequisites for trusted nested-container workflows, not because PTS is a hostile-code boundary.
 
 ## Browser and PDF support
 
@@ -73,7 +61,7 @@ The repository does not install a project’s Playwright package or browser bund
 
 ## Extension points and constraints
 
-A project can commit `.polytoken/Containerfile` to extend the shared image with project-specific packages. It can also commit `.polytoken/volumes` for deliberate additional `-v` mounts, one mount specification per line.
+A project can commit `.polytoken/Containerfile` to extend the shared image with project-specific packages. It can also commit `.polytoken/volumes` for deliberate additional `-v` mounts, one mount specification per line. PTS refuses to read that file unless the operator sets `PTS_ALLOW_PROJECT_VOLUMES=1` for the invocation after reviewing the entries; the reviewed entries are passed through unchanged.
 
 Keep changes minimal and image-level when a dependency is shared by all sandboxed projects. Do not add application substitutes for canonical workflows without verification. When changing `Containerfile`, the launcher’s content hash causes the shared image to rebuild automatically on the next `pts` invocation.
 
@@ -81,11 +69,15 @@ Keep changes minimal and image-level when a dependency is shared by all sandboxe
 
 The sandbox is isolation by filesystem exposure, not a hostile multi-tenant security boundary. The outer container is intentionally privileged to enable nested rootless container operations. Credentials are passed to the container for the duration of the run, while the host’s general home directory and host Docker socket remain unmounted.
 
-## Troubleshooting record: Docker and agent context
+## Current Docker limitation
 
-This record documents the investigation performed while making the sandbox usable for Docker-dependent agents.
+The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows, but the current launcher does not start a Docker daemon, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. A project that needs Docker must provide and verify its own daemon endpoint. Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS; the container does not run systemd and does not expose the host socket.
 
-### Initial symptoms
+The outer container remains privileged, host-networked, and device-enabled because those are retained runtime prerequisites for trusted nested-container workflows. They are not a hostile-code isolation guarantee.
+
+### Historical troubleshooting notes
+
+The notes below record earlier development investigations. They are not the current runtime contract; see **Current Docker limitation** above and the launch flow for current behavior.
 
 - The launcher copied `AGENTS.md` from a `$HOME`-derived path. In this environment, the repository was available at `/home/will/.bashrc.d/polytoken-sandbox`, while the shell environment also exposed `/var/home/will` paths. The source lookup therefore failed in some invocations.
 - Project state did not receive `AGENTS.md` when an image build failed, because synchronization happened after image building.
@@ -94,9 +86,12 @@ This record documents the investigation performed while making the sandbox usabl
 - Agents sometimes attempted `sudo`, `systemctl start docker`, or `service docker`. Those commands are wrong here: the sandbox does not run systemd as PID 1, does not provide a host Docker service, and does not mount the host Docker socket.
 - Some Docker-aware tooling selected the project-local path `.polytoken/.docker/run/docker.sock` instead of the launcher’s daemon socket.
 
-### Changes that resolved the issues
+### Historical implementation notes
 
-`polytoken-sandbox.sh` now:
+The detailed Docker investigation and one-time verification are retained in earlier commits. They established the rootless image-build and nested-container constraints that explain the current privileged runtime, but they are not a description of a currently launched Docker daemon.
+
+The historical implementation notes below are preserved for context:
+
 
 1. Resolves bundled files relative to the launcher directory rather than assuming `$HOME/.bashrc.d/polytoken-sandbox`.
 2. Synchronizes `config.yaml`, `AGENTS.md`, and Ponytail files before image work, so agent context is available even when a rebuild fails.

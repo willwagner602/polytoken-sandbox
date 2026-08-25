@@ -16,15 +16,17 @@ polytoken:
         items:
           type: object
           additionalProperties: false
-          required: [severity, title, summary]
+          required: [severity, title, file, line, claim, evidence, repro_hint, confidence, recommended_fix]
           properties:
-            severity: {type: string, enum: [critical, important, minor, noted]}
+            severity: {type: string, enum: [critical, high, medium, low]}
             title: {type: string}
             file: {type: [string, "null"]}
             line: {type: [string, "null"]}
-            effort: {type: [string, "null"], enum: [trivial, moderate, significant, null]}
-            evidence: {type: string, enum: [cited-spec, code-site, inference], default: code-site}
-            summary: {type: string, description: "What's wrong with the prompt, why it degrades the agent's output, and the fix."}
+            claim: {type: string}
+            evidence: {type: string, enum: [cited-spec, code-site, inference]}
+            repro_hint: {type: string}
+            confidence: {type: string}
+            recommended_fix: {type: string}
       note: {type: [string, "null"]}
 ---
 
@@ -130,5 +132,4 @@ embedded in code (different artifact, different persona's concern).
 
 ## Finishing
 
-Call your exit tool with the `findings` array (empty if none). Each finding needs `severity`,
-`title`, and `summary` at minimum; include `file`/`line` when you have a concrete location.
+Call your exit tool with the `findings` array (empty if none). Each finding uses the shared Angel contract: `severity` (`critical`, `high`, `medium`, or `low`), `title`, `file`, `line`, `claim`, `evidence`, `repro_hint`, `confidence`, and `recommended_fix`. Use null for `file` or `line` only when no concrete location exists. Keep the causal claim, evidence, reproduction hint, and fix specific enough for the Integrator to preserve without interpretation.
