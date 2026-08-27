@@ -71,11 +71,13 @@ Keep changes minimal and image-level when a dependency is shared by all sandboxe
 
 The sandbox is isolation by filesystem exposure, not a hostile multi-tenant security boundary. The outer container is intentionally privileged to enable nested rootless container operations. Credentials are passed to the container for the duration of the run, while the host’s general home directory and host Docker socket remain unmounted.
 
-## Current Docker limitation
+## Docker support
 
-The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows, but the current launcher does not start a Docker daemon, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. A project that needs Docker must provide and verify its own daemon endpoint. Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS; the container does not run systemd and does not expose the host socket.
+The launcher starts a nested Docker daemon inside each PTS container before launching Polytoken. It uses the privileged outer container as root, with `vfs` storage and disabled iptables/bridge networking because the sandbox kernel does not provide the modules required by Docker's default bridge. Docker-aware project commands should use host networking when they start nested containers.
 
-The outer container remains privileged, host-networked, and device-enabled because those are retained runtime prerequisites for trusted nested-container workflows. They are not a hostile-code isolation guarantee.
+The launcher exports `DOCKER_HOST=unix:///tmp/run-0/docker.sock`, clears Docker context/config overrides, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, but retains the existing diagnostic fallback if the daemon cannot start. Do not use `sudo`, `systemctl`, or `service` inside PTS; the container does not run systemd and does not expose the host Docker socket.
+
+The outer container remains privileged, host-networked, and device-enabled because those are required for nested container workflows. They are not a hostile-code isolation guarantee.
 
 ### Historical troubleshooting notes
 
