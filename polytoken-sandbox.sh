@@ -50,43 +50,167 @@ _pts_stage_ponytail() {
 }
 
 # Gates a project-local `.polytoken/` extension file (Containerfile or
-# volumes) behind one-time interactive confirmation before it's built/mounted
-# — without this, cloning an untrusted repo and running `pts` inside it lets
-# that repo silently extend the image or bind-mount arbitrary host paths
-# (e.g. a `.polytoken/volumes` line of `/:/hostroot`) into an already
-# --privileged container with live API keys and a GitHub token. Approval is
-# pinned to a sha256 of the file's content, not just "this project", in a
-# marker alongside it — so editing the file after approval (a supply-chain
-# swap: get a benign version trusted once, then change it) re-prompts rather
-# than silently inheriting the old trust decision. Markers live under
-# `.polytoken/` (gitignored, per-project, never committed).
+# volumes) behind one-time interactive confirmation before it's built/mounted.
+# The content hash is stored in a user-owned state directory, never beside the
+# project-controlled file, so a repository cannot pre-seed or rewrite approval.
 _pts_confirm_trust() {
-    local target_file="$1" reason="$2"
-    local trust_marker="$target_file.trusted-sha256"
+    local target_file="$1" reason="$2" target_dir trust_root trust_marker
     local current_hash
+    target_dir="$(cd "$(dirname "$target_file")" && pwd -P)"
+    trust_root="${XDG_STATE_HOME:-$HOME/.local/state}/polytoken/pts/trust"
+    trust_marker="$trust_root/$(_pts_project_hash "$target_dir")-$(basename "$target_file").sha256"
+    mkdir -p -m 700 "$trust_root" || return 1
     current_hash="$(sha256sum "$target_file" | cut -d' ' -f1)"
-    if [[ -f "$trust_marker" && "$(<"$trust_marker")" == "$current_hash" ]]; then
+    if [[ -f "$trust_marker" && "$(<"$trust_marker")" == "$current_hash" ]] &&
+        [[ ! -L "$trust_marker" && "$(stat -c '%a' "$trust_marker" 2>/dev/null)" == 600 ]]; then
         return 0
     fi
     echo "pts: $target_file $reason" >&2
-    # Bounded, not unconditional: EOF (piped/closed stdin) returns immediately
-    # (declined); a genuinely interactive terminal gets up to 30s to answer;
-    # an inherited-but-silent stream (e.g. backgrounded invocation) times out
-    # rather than hanging forever.
     local reply=""
     read -r -t 30 -p "pts: trust and apply this file? [y/N] " reply || true
     if [[ "$reply" =~ ^[Yy]$ ]]; then
-        printf '%s\n' "$current_hash" >"$trust_marker"
+        local tmp="$trust_marker.tmp.$$.${RANDOM}"
+        (umask 077; printf '%s\n' "$current_hash" >"$tmp") || return 1
+        chmod 600 "$tmp" && mv -f -- "$tmp" "$trust_marker" || { rm -f -- "$tmp"; return 1; }
         return 0
     fi
     echo "pts: not trusted — skipping $target_file for this run." >&2
     return 1
+}
+_pts_validate_volume() {
+    local spec="$1" host target opts
+    IFS=: read -r host target opts <<<"$spec"
+    [[ "$host" == /* && "$target" == /* && "$host" != / ]] || return 1
+    case "$host" in
+        /|/run|/proc|/sys|/dev|/etc|/root|/home|/tmp|/var/lib|/var/run|/var/log|/home/*/.codex|/home/*/.local/share/polytoken/auth/*)
+            return 1 ;;
+    esac
+    return 0
+}
+
+# Managed PTS lifecycle helpers. These deliberately use Podman's label-filtered
+# inventory and exact full IDs for every mutation; never broaden a destructive
+# operation to a name pattern or an unfiltered container list.
+_pts_schema=1
+_pts_owner=polytoken.pts
+_pts_project_path() { (cd "$1" && pwd -P); }
+_pts_project_hash() { printf '%s' "$1" | sha256sum | cut -c1-16; }
+_pts_project_slug() {
+    local slug
+    slug="$(basename "$1" | tr -cs '[:alnum:]_.-' '-')"
+    slug="${slug##-}"; slug="${slug%%-}"
+    [[ -n "$slug" ]] || slug=project
+    printf '%.32s' "$slug"
+}
+_pts_name() { printf 'pts-%s-%s-%s' "$(_pts_project_slug "$1")" "$(_pts_project_hash "$2")" "$(date -u +%Y%m%d%H%M%S)-$$-$RANDOM"; }
+_pts_validate_nonnegative() { [[ "$2" =~ ^[0-9]+$ ]] || { echo "pts: $1 must be a non-negative integer" >&2; return 1; }; }
+_pts_ids() { podman ps -a --filter "label=pts.owner=$_pts_owner" --format '{{.ID}}'; }
+_pts_running_for_project() {
+    local project_hash="$1" id line full name status exit phash project workdir memory swap pids init schema
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        line="$(_pts_inspect "$id" 2>/dev/null)" || continue
+        IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"
+        [[ "$schema" == "$_pts_schema" && "$status" == running && "$phash" == "$project_hash" ]] && printf '%s\n' "$full"
+    done < <(_pts_ids)
+}
+_pts_inspect() { podman inspect --format '{{.Id}}\t{{.Name}}\t{{.State.Status}}\t{{.State.ExitCode}}\t{{index .Config.Labels "pts.project-hash"}}\t{{index .Config.Labels "pts.project"}}\t{{.Config.WorkingDir}}\t{{.HostConfig.Memory}}\t{{.HostConfig.MemorySwap}}\t{{.HostConfig.PidsLimit}}\t{{.HostConfig.Init}}\t{{index .Config.Labels "pts.schema"}}' "$1"; }
+_pts_resolve() {
+    local query="${1:-}" project_hash="${2:-}" id line full name status exit phash project workdir memory swap pids init schema match=()
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        line="$(_pts_inspect "$id" 2>/dev/null)" || continue
+        IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"
+        [[ "$schema" == "$_pts_schema" ]] || continue
+        [[ -n "$project_hash" && "$phash" != "$project_hash" ]] && continue
+        name="${name#/}"
+        if [[ -z "$query" || "$full" == "$query" || "$full" == "$query"* || "$name" == "$query" ]]; then match+=("$full"); fi
+    done < <(_pts_ids)
+    if ((${#match[@]} != 1)); then
+        if ((${#match[@]} == 0)); then echo "pts: no matching managed container" >&2
+        else printf 'pts: ambiguous target; choose one of:\n' >&2; printf '  %s\n' "${match[@]}" >&2; fi
+        return 1
+    fi
+    printf '%s\n' "${match[0]}"
+}
+_pts_diag() {
+    local id="$1" project="$2" root stamp bundle tmp
+    root="$project/.polytoken/pts/diagnostics/$(_pts_project_hash "$project")"
+    mkdir -p -m 700 "$root" || return 0
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"; bundle="$root/${stamp}-${id}"
+    tmp="$root/.tmp-${id}-$$"; rm -rf -- "$tmp"; mkdir -p -m 700 -- "$tmp" || return 0
+    { printf 'timestamp_utc=%q\nproject=%q\ncontainer_id=%q\n' "$stamp" "$project" "$id"; _pts_inspect "$id" 2>/dev/null || printf 'inspect=unavailable\n'; podman stats --no-stream "$id" 2>&1 | head -c 8192 || true; } >"$tmp/metadata" 2>&1 || true
+    : >"$tmp/.complete"; mv -- "$tmp" "$bundle" 2>/dev/null || rm -rf -- "$tmp"
+    find "$root" -mindepth 1 -maxdepth 1 -type d -name '*-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | tail -n +6 | cut -d' ' -f2- | while IFS= read -r old; do [[ -f "$old/.complete" && ! -L "$old" ]] && rm -rf -- "$old"; done
+}
+_pts_stop_exact() {
+    local id="$1" timeout="${PTS_STOP_TIMEOUT:-10}" status
+    _pts_validate_nonnegative PTS_STOP_TIMEOUT "$timeout" || return 1
+    podman stop --time "$timeout" "$id" >/dev/null 2>&1 || true
+    status="$(podman inspect --format '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    if [[ "$status" == running || "$status" == created ]]; then
+        _pts_diag "$id" "${PTS_DIAG_PROJECT:-$(pwd -P)}"
+        podman kill "$id" >/dev/null 2>&1 || true
+    fi
+    podman rm "$id" >/dev/null 2>&1 || { echo "pts: could not remove container $id; use pts ps/prune" >&2; return 1; }
+}
+_pts_attach_exact() {
+    local id="$1" line full name status exit phash project workdir memory swap pids init schema
+    line="$(_pts_inspect "$id" 2>/dev/null)" || { echo "pts: cannot inspect managed container $id" >&2; return 1; }
+    IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"
+    [[ "$schema" == "$_pts_schema" ]] || { echo "pts: unsupported PTS launcher schema" >&2; return 1; }
+    [[ "$status" == running ]] || { echo "pts: container $id is not running (state: $status)" >&2; return 1; }
+    [[ -n "$workdir" && "$workdir" == /* ]] || { echo "pts: managed workdir is invalid" >&2; return 1; }
+    exec podman attach --sig-proxy=true "$full"
+}
+_pts_management() {
+    local command="$1" query="${2:-}" project="" hash id line
+    if [[ "$command" != ps && "$command" != prune ]]; then
+        project="$(_pts_project_path "$(pwd)")" || { echo "pts: current project cannot be resolved" >&2; return 1; }
+    fi
+    case "$command" in
+        ps) printf '%-14s %-28s %-12s %s\n' ID NAME STATUS PROJECT; while IFS= read -r id; do line="$(_pts_inspect "$id" 2>/dev/null || true)"; [[ -n "$line" ]] || continue; IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"; printf '%-14.12s %-28.28s %-12s %s\n' "$full" "${name#/}" "$status" "$project"; done < <(_pts_ids); return 0 ;;
+        attach|stop|stats|diagnose) id="$(_pts_resolve "$query" "$([[ -n "$query" ]] && echo || echo "$(_pts_project_hash "$project")")")" || return 1 ;;
+        prune) local answer; mapfile -t ids < <(_pts_ids); for id in "${ids[@]}"; do [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && printf '%s\n' "$id"; done; read -r -p 'pts: remove stopped managed containers? [y/N] ' answer || return 1; [[ "$answer" =~ ^[Yy]$ ]] || return 0; for id in "${ids[@]}"; do [[ -n "$id" ]] && [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && podman rm "$id"; done; return 0 ;;
+        *) return 2 ;;
+    esac
+    case "$command" in
+        attach) _pts_attach_exact "$id" ;;
+        stop) _pts_stop_exact "$id" ;;
+        stats) exec podman stats --no-stream "$id" ;;
+        diagnose) _pts_diag "$id" "$project" ;;
+    esac
 }
 
 pts() {
     if ! command -v podman &>/dev/null; then
         echo "Error: podman is not installed or not on PATH" >&2
         return 1
+    fi
+
+    local management_command="${1:-}"
+    case "$management_command" in
+        ps|attach|stop|stats|diagnose|prune)
+            _pts_management "$management_command" "${2:-}"
+            return $?
+            ;;
+        --) shift ;;
+    esac
+
+    if [[ -z "${1:-}" ]]; then
+        local existing_project existing_hash existing_ids
+        existing_project="$(_pts_project_path "$(pwd)")" || return 1
+        existing_hash="$(_pts_project_hash "$existing_project")"
+        mapfile -t existing_ids < <(_pts_running_for_project "$existing_hash")
+        if ((${#existing_ids[@]} == 1)); then
+            echo "pts: reconnecting to the existing managed container ${existing_ids[0]}" >&2
+            _pts_attach_exact "${existing_ids[0]}"
+            return $?
+        elif ((${#existing_ids[@]} > 1)); then
+            echo "pts: multiple running managed containers match this project; use pts attach ID or pts stop ID" >&2
+            printf '  %s\n' "${existing_ids[@]}" >&2
+            return 1
+        fi
     fi
 
     local base_image="localhost/polytoken-sandbox:latest"
@@ -103,8 +227,18 @@ pts() {
         podman build -t "$base_image" "$HOME/.bashrc.d/polytoken-sandbox" >&2 || return 1
     fi
 
-    local workdir
+    local workdir canonical_project project_hash container_name
     workdir="$(pwd)"
+    canonical_project="$(_pts_project_path "$workdir")"
+    project_hash="$(_pts_project_hash "$canonical_project")"
+    container_name="$(_pts_name "$canonical_project" "$project_hash")"
+    local pts_memory="${PTS_MEMORY:-12g}"
+    local pts_memory_swap="${PTS_MEMORY_SWAP:-16g}"
+    local pts_pids_limit="${PTS_PIDS_LIMIT:-2048}"
+    local -a polytoken_args=("$@")
+    if ((${#polytoken_args[@]} == 0)); then
+        polytoken_args=(continue)
+    fi
 
     # A project can extend the shared image by committing its own
     # `.polytoken/Containerfile` (FROM localhost/polytoken-sandbox:latest,
@@ -117,7 +251,9 @@ pts() {
     local project_containerfile="$workdir/.polytoken/Containerfile"
     if [[ -f "$project_containerfile" ]] && _pts_confirm_trust "$project_containerfile" \
         "will be built and used as this project's sandbox image"; then
-        image="localhost/polytoken-sandbox-$(basename "$workdir"):latest"
+        local containerfile_hash
+        containerfile_hash="$(sha256sum "$project_containerfile" | cut -c1-16)"
+        image="localhost/polytoken-sandbox-$(_pts_project_hash "$canonical_project")-$containerfile_hash:latest"
         if ! podman image exists "$image" 2>/dev/null; then
             echo "Building project sandbox image (one-time setup)..." >&2
             podman build -t "$image" -f "$project_containerfile" "$(dirname "$project_containerfile")" >&2 || return 1
@@ -193,7 +329,10 @@ pts() {
     # This is separate from Polytoken's auth store above.
     local codex_cli_host_dir="$HOME/.codex"
     local codex_cli_dir="$state_dir/.codex"
-    mkdir -p "$codex_cli_host_dir" "$codex_cli_dir"
+    local share_codex_cli="${PTS_SHARE_CODEX:-0}"
+    if [[ "$share_codex_cli" == 1 ]]; then
+        mkdir -p "$codex_cli_host_dir" "$codex_cli_dir"
+    fi
 
     # NineAngel ("angel") is a multi-persona code-review skill, adapted from
     # github.com/PropterMalone/NineAngel (vendored as a pinned git submodule
@@ -229,10 +368,12 @@ pts() {
         -v "$workdir:$workdir"
         -v "polytoken-sandbox-bin:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
-        -v "$codex_cli_host_dir:$codex_cli_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
+    if [[ "$share_codex_cli" == 1 ]]; then
+        volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
+    fi
     local host_binary="$HOME/.local/bin/polytoken"
     if [[ -f "$host_binary" ]]; then
         volumes+=(-v "$host_binary:/opt/polytoken-seed/polytoken:ro")
@@ -250,7 +391,11 @@ pts() {
         "will have every line bind-mounted verbatim into this --privileged container"; then
         local _volume_line
         while IFS= read -r _volume_line || [[ -n "$_volume_line" ]]; do
-            [[ -z "$_volume_line" ]] && continue
+            [[ -z "$_volume_line" || "$_volume_line" == \#* ]] && continue
+            if ! _pts_validate_volume "$_volume_line"; then
+                echo "pts: refusing unsafe volume specification: $_volume_line" >&2
+                return 1
+            fi
             volumes+=(-v "$_volume_line")
         done <"$project_volumes"
         unset _volume_line
@@ -289,7 +434,7 @@ pts() {
     local -i _cfg_count=0
     if [[ -n "$gh_token" ]]; then
         git_env+=(
-            -e GH_TOKEN="$gh_token"
+            -e GH_TOKEN
             -e GIT_CONFIG_KEY_${_cfg_count}="credential.https://github.com.helper"
             -e GIT_CONFIG_VALUE_${_cfg_count}=""
         )
@@ -360,8 +505,31 @@ esac
 exec /opt/polytoken-bin/polytoken "$@"
 '
 
-    podman run --rm -it \
+    local container_id=""
+    local primary_status=0 abnormal_owner=0 cleanup_started=0
+    _pts_abnormal_cleanup() {
+        ((cleanup_started)) && return 0
+        cleanup_started=1
+        trap - HUP TERM INT
+        [[ -n "$container_id" ]] || return 0
+        _pts_diag "$container_id" "$canonical_project"
+        _pts_stop_exact "$container_id" || true
+    }
+    _pts_owner_signal() { abnormal_owner=1; _pts_abnormal_cleanup; exit 143; }
+    trap _pts_owner_signal HUP TERM INT
+
+    GH_TOKEN="$gh_token" container_id="$(podman create -it \
+        --name "$container_name" \
+        --label "pts.owner=$_pts_owner" \
+        --label "pts.schema=$_pts_schema" \
+        --label "pts.project=$canonical_project" \
+        --label "pts.project-hash=$project_hash" \
+        --label "pts.launch-utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --privileged \
+        --init \
+        --memory "$pts_memory" \
+        --memory-swap "$pts_memory_swap" \
+        --pids-limit "$pts_pids_limit" \
         --userns=keep-id:size=65536 \
         --security-opt label=disable \
         --network=host \
@@ -371,18 +539,29 @@ exec /opt/polytoken-bin/polytoken "$@"
         -w "$workdir" \
         -e HOME="$state_dir" \
         -e TERM \
-        -e OPENAI_API_KEY \
-        -e ANTHROPIC_API_KEY \
-        -e ZAI_API_KEY \
-        -e NEURALWATT_API_KEY \
-        -e OPENCODE_API_KEY \
-        -e BRAVE_API_KEY \
-        -e TAVILY_API_KEY \
-        -e EXA_API_KEY \
-        -e KAGI_API_KEY \
-        -e PONYTAIL_DEFAULT_MODE \
-        "${git_env[@]}" \
-        --entrypoint /bin/sh \
-        "$image" \
-        -c "$seed_and_exec" sh "$@"
+        -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e ZAI_API_KEY \
+        -e NEURALWATT_API_KEY -e OPENCODE_API_KEY -e BRAVE_API_KEY \
+        -e TAVILY_API_KEY -e EXA_API_KEY -e KAGI_API_KEY \
+        -e PONYTAIL_DEFAULT_MODE "${git_env[@]}" \
+        --entrypoint /bin/sh "$image" -c "$seed_and_exec" sh "${polytoken_args[@]}")" || return 1
+    container_id="${container_id##*$'\n'}"
+    printf 'pts: container=%s id=%.12s project=%s memory=%s memory+swap=%s pids=%s\n' \\
+        "$container_name" "$container_id" "$canonical_project" "$pts_memory" "$pts_memory_swap" "$pts_pids_limit" >&2
+    if ! _pts_inspect "$container_id" >/dev/null 2>&1; then
+        podman rm "$container_id" >/dev/null 2>&1 || true
+        return 1
+    fi
+    podman start -ai --sig-proxy=true "$container_id" || primary_status=$?
+    if ((abnormal_owner)); then
+        exit 143
+    fi
+    status="$(podman inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+    if [[ "$status" == running ]]; then
+        echo "pts: retained running container $container_name ($container_id); use pts attach/stop" >&2
+    else
+        _pts_diag "$container_id" "$canonical_project"
+        podman rm "$container_id" >/dev/null 2>&1 || echo "pts: cleanup failed for $container_id; use pts ps/prune" >&2
+    fi
+    trap - HUP TERM
+    return "$primary_status"
 }

@@ -2,6 +2,10 @@
 
 `pts` is a shell function that runs Polytoken inside a rootless Podman container. It provides a repeatable Fedora-based development environment with project-oriented filesystem isolation. PTS is intended for trusted projects, not hostile code: nested-container support uses privileged execution, host networking, devices, selected credentials, and disabled SELinux labels.
 
+## Operator commands
+
+Use `pts` to continue the most recent project session, or reconnect to the sole running managed container. Use `pts ps`, `pts attach [ID|name]`, `pts stop [ID|name]`, `pts stats [ID|name]`, `pts diagnose [ID|name]`, and `pts prune`. Targets are resolved only from PTS-owned labels and destructive operations use exact full IDs. `pts continue SESSION_ID` replays durable history; it is distinct from live detach/reattach.
+
 ## What the container provides
 
 The shared image is built from `quay.io/fedora/fedora-minimal:latest` and installs:
@@ -25,7 +29,12 @@ PTS launches the image with:
 - host networking (`--network=host`), allowing provider API calls without a container-private network
 - the current project directory as the working directory
 - `HOME` redirected to `<project>/.polytoken`
-- `--rm`, so the application container itself is removed after exit; persistent state is stored in bind mounts and project files
+- a unique PTS-managed name and ownership/project labels, so every container is attributable without broad process matching
+- `--init`, memory `12g`, total memory+swap `16g`, and PID limit `2048` by default; override with `PTS_MEMORY`, `PTS_MEMORY_SWAP`, and `PTS_PIDS_LIMIT`
+- managed `create`/`start -ai` lifecycle; abnormal HUP/TERM cleanup uses the recorded full ID, `PTS_STOP_TIMEOUT` (default 10 seconds), then bounded kill escalation
+- deliberate `/detach` and Ctrl+D retain the running bounded container; `/quit` removes it after classification. `pts continue SESSION_ID` replays durable history after termination
+- `pts ps`, `attach`, `stop`, `stats`, `diagnose`, and confirmed `prune` operate only on PTS-labeled containers
+- persistent state is stored in bind mounts and project files; SIGKILL, host crash, and power loss can leave a labeled stopped container for explicit recovery
 
 The host Polytoken binary is mounted read-only at `/opt/polytoken-seed/polytoken` when present. On the first run, PTS copies it into the shared `polytoken-sandbox-bin` volume and executes `/opt/polytoken-bin/polytoken` from then on. Run `pts update` to update that persistent copy; changing the host binary alone does not replace an existing volume copy.
 
@@ -52,15 +61,15 @@ pts: /path/to/project/.polytoken/volumes will have every line bind-mounted verba
 pts: trust and apply this file? [y/N]
 ```
 
-Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
+Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. The marker is stored in user-owned state under `$XDG_STATE_HOME` (or `~/.local/state`) with mode 600, not in the project tree. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
 
-After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line, for example:
+After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths and rejects host-root, system, runtime, and credential paths; for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
 ```
 
-These mounts are passed through as written once approved. They can expose arbitrary host paths or writable destinations, so only approve files from projects you trust.
+These mounts are passed through once approved after the path checks above. Writable mounts can still expose project-trusted host paths, so only approve files from projects you trust.
 
 ## Project layout and persistence
 
@@ -103,7 +112,7 @@ Container:  $HOME/.local/share/polytoken/auth/codex/
 Mode:       read/write
 ```
 
-This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. The OpenAI Codex CLI is a separate tool: its `~/.codex/` state is mounted independently so `codex login` and ChatGPT/subscription authentication can be reused inside PTS. The two auth stores must not be conflated.
+This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. The OpenAI Codex CLI is a separate tool. Its `~/.codex/` state is not mounted by default; set `PTS_SHARE_CODEX=1` explicitly when reusing Codex login state inside PTS is required. The two auth stores must not be conflated.
 
 ## Nested containers and Docker
 
@@ -121,6 +130,26 @@ A project may customize the environment without changing the shared image:
 - `ponytail/` — supplies the copied hooks and configuration used by the launcher
 
 These files are read from the host before the container starts. The project-specific Containerfile is built only when its image is absent; rebuild it manually when its dependencies change.
+
+## Diagnostics and incident response
+
+`pts diagnose` and abnormal cleanup write private, bounded bundles below
+`.polytoken/pts/diagnostics/<project-hash>/`. Bundles contain operational identity,
+state, exit/OOM indicators, effective limits, and bounded stats output when
+available. They do not contain container environments, credentials, credential
+files, prompts, complete session JSONL, command arguments, or unbounded logs.
+Diagnostics are best effort and never replace exact-ID cleanup. SIGKILL, host
+crash, and power loss can prevent capture and leave a stopped labeled container
+for later `pts ps`, `pts diagnose`, `pts stop`, or confirmed `pts prune` recovery.
+
+If bounded growth recurs, preserve the diagnostic bundle and identify the
+container/session/time window first. Reproduce with a known workload under the
+configured limit, then collect upstream-supported heap/allocation profiling and
+Polytoken metrics/logs in the Polytoken source environment. Compare session
+history size, task/subagent fan-out, caches, and heap growth as hypotheses—not
+conclusions—and do not copy credentials or full prompt/session contents into
+shared artifacts. Open a separate upstream fix only when measured retained
+allocations identify a cause.
 
 ## Security and operational boundaries
 
