@@ -61,3 +61,9 @@ grep -Fq -- '@openai/codex' "$repo_dir/Containerfile"
 grep -Fq -- 'local codex_cli_host_dir="$HOME/.codex"' "$repo_dir/polytoken-sandbox.sh"
 grep -Fq -- '-v "$codex_cli_host_dir:$codex_cli_dir"' "$repo_dir/polytoken-sandbox.sh"
 printf 'Codex container contract checks passed\n'
+
+# The shared image must ship the Compose CLI plugin (Fedora packages it
+# directly into /usr/libexec/docker/cli-plugins/) so `docker compose` —
+# including compose-file syntax validation — works inside pts.
+grep -Fq -- 'docker-compose' "$repo_dir/Containerfile"
+printf 'Compose plugin contract check passed\n'
