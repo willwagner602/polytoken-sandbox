@@ -78,11 +78,19 @@ _pts_confirm_trust() {
     return 1
 }
 _pts_validate_volume() {
-    local spec="$1" host target opts
+    local spec="$1" host target opts resolved
     IFS=: read -r host target opts <<<"$spec"
     [[ "$host" == /* && "$target" == /* && "$host" != / ]] || return 1
-    case "$host" in
-        /|/run|/proc|/sys|/dev|/etc|/root|/home|/tmp|/var/lib|/var/run|/var/log|/home/*/.codex|/home/*/.local/share/polytoken/auth/*)
+    # Check the canonical source, not the lexical one: podman binds the
+    # symlink target, so an innocent-looking path can resolve into a
+    # credential store. Non-existent sources fail closed (podman would
+    # otherwise auto-create them).
+    # polytoken: a TOCTOU window remains — a symlink can be swapped between
+    # validation and `podman create`; mounting the validated resolved path
+    # instead of the approved line is the upgrade if that matters.
+    resolved="$(realpath -e -- "$host" 2>/dev/null)" || return 1
+    case "$resolved" in
+        /|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/etc|/etc/*|/root|/root/*|/home|/tmp|/var/lib|/var/lib/*|/var/run|/var/log|/var/log/*|/home/*/.ssh*|/home/*/.aws*|/home/*/.gnupg*|/home/*/.config*|/home/*/.docker*|/home/*/.kube*|/home/*/.codex*|/home/*/.netrc*|/home/*/.local/share/polytoken*)
             return 1 ;;
     esac
     return 0
@@ -506,7 +514,7 @@ exec /opt/polytoken-bin/polytoken "$@"
 '
 
     local container_id=""
-    local primary_status=0 abnormal_owner=0 cleanup_started=0
+    local primary_status=0 abnormal_owner=0 cleanup_started=0 pts_attach_pid=""
     _pts_abnormal_cleanup() {
         ((cleanup_started)) && return 0
         cleanup_started=1
@@ -515,7 +523,15 @@ exec /opt/polytoken-bin/polytoken "$@"
         _pts_diag "$container_id" "$canonical_project"
         _pts_stop_exact "$container_id" || true
     }
-    _pts_owner_signal() { abnormal_owner=1; _pts_abnormal_cleanup; exit 143; }
+    _pts_owner_signal() {
+        abnormal_owner=1
+        _pts_abnormal_cleanup
+        # The container the attach client is streaming from is stopped by
+        # the cleanup above; kill the client too so no orphaned
+        # `podman start` outlives this wrapper.
+        [[ -n "$pts_attach_pid" ]] && kill "$pts_attach_pid" 2>/dev/null
+        exit 143
+    }
     trap _pts_owner_signal HUP TERM INT
 
     GH_TOKEN="$gh_token" container_id="$(podman create -it \
@@ -551,7 +567,15 @@ exec /opt/polytoken-bin/polytoken "$@"
         podman rm "$container_id" >/dev/null 2>&1 || true
         return 1
     fi
-    podman start -ai --sig-proxy=true "$container_id" || primary_status=$?
+    # Background + `wait`, never a foreground call: bash defers trapped
+    # signals while it waits on a foreground external command, so a
+    # foreground `podman start -ai` would postpone this trap's cleanup
+    # until the attach client exited on its own — after terminal loss the
+    # container would keep running with nobody supervising it. `wait` is
+    # a builtin; a signal interrupts it and runs the trap immediately.
+    podman start -ai --sig-proxy=true "$container_id" &
+    pts_attach_pid=$!
+    wait "$pts_attach_pid" || primary_status=$?
     if ((abnormal_owner)); then
         exit 143
     fi
@@ -562,6 +586,6 @@ exec /opt/polytoken-bin/polytoken "$@"
         _pts_diag "$container_id" "$canonical_project"
         podman rm "$container_id" >/dev/null 2>&1 || echo "pts: cleanup failed for $container_id; use pts ps/prune" >&2
     fi
-    trap - HUP TERM
+    trap - HUP TERM INT
     return "$primary_status"
 }
