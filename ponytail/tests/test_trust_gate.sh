@@ -62,6 +62,28 @@ if _pts_validate_volume '/:/hostroot'; then
     echo "FAIL: host-root volume should be rejected" >&2
     exit 1
 fi
-_pts_validate_volume '/home/will/work/docker_files:/mnt:ro' || { echo "FAIL: safe absolute read-only volume should be accepted" >&2; exit 1; }
+# The validator resolves symlinks and requires the source to exist, so
+# accepted cases use paths created here rather than real user directories.
+mkdir -p "$scratch/ok-source"
+_pts_validate_volume "$scratch/ok-source:/mnt:ro" || { echo "FAIL: safe absolute read-only volume should be accepted" >&2; exit 1; }
+if _pts_validate_volume "$scratch/missing-source:/mnt:ro"; then
+    echo "FAIL: non-existent volume source should be rejected" >&2
+    exit 1
+fi
+created_ssh=0
+if [[ ! -d "$HOME/.ssh" ]]; then
+    mkdir -p "$HOME/.ssh"
+    created_ssh=1
+fi
+if _pts_validate_volume "$HOME/.ssh:/mnt:ro"; then
+    echo "FAIL: credential path should be rejected" >&2
+    exit 1
+fi
+ln -s "$HOME/.ssh" "$scratch/looks-innocent"
+if _pts_validate_volume "$scratch/looks-innocent:/mnt:ro"; then
+    echo "FAIL: symlink resolving into a credential path should be rejected" >&2
+    exit 1
+fi
+(( created_ssh )) && rmdir "$HOME/.ssh" 2>/dev/null || true
 
 printf 'Trust gate checks passed\n'

@@ -63,7 +63,7 @@ pts: trust and apply this file? [y/N]
 
 Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. The marker is stored in user-owned state under `$XDG_STATE_HOME` (or `~/.local/state`) with mode 600, not in the project tree. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
 
-After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths and rejects host-root, system, runtime, and credential paths; for example:
+After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths, requires the source to exist, resolves symlinks before checking, and rejects host-root, system, runtime, and credential paths — including home credential/config stores such as `.ssh`, `.aws`, `.gnupg`, `.config`, `.docker`, `.kube`, `.codex`, `.netrc`, and Polytoken's own host state; for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
