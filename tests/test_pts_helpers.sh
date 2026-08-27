@@ -17,7 +17,8 @@ test_no_unsafe_operations() {
   grep -Fq -- 'podman start -ai --sig-proxy=true' "$root/polytoken-sandbox.sh"
   ! grep -Fq -- 'podman run --rm -it \\' "$root/polytoken-sandbox.sh"
   ! grep -Eq -- '-e GH_TOKEN=' "$root/polytoken-sandbox.sh"
-  grep -Fq -- 'trap _pts_forward_int INT' "$root/polytoken-sandbox.sh"
+  grep -Fq -- 'trap _pts_owner_signal HUP TERM INT' "$root/polytoken-sandbox.sh"
+  ! grep -Fq -- '_pts_forward_int' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'polytoken_args=(continue)' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'sh "${polytoken_args[@]}"' "$root/polytoken-sandbox.sh"
 }

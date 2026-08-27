@@ -22,7 +22,9 @@ if _pts_confirm_trust "$target" "test reason" </dev/null; then
     echo "FAIL: EOF on stdin should have refused" >&2
     exit 1
 fi
-[[ ! -f "$target.trusted-sha256" ]] || { echo "FAIL: refusal should not write a trust marker" >&2; exit 1; }
+trust_root="${XDG_STATE_HOME:-$HOME/.local/state}/polytoken/pts/trust"
+trust_marker="$trust_root/$(_pts_project_hash "$scratch")-volumes.sha256"
+[[ ! -f "$trust_marker" ]] || { echo "FAIL: refusal should not write a trust marker" >&2; exit 1; }
 
 # 2. Declining interactively (answers "n") must also refuse.
 if echo "n" | _pts_confirm_trust "$target" "test reason"; then
@@ -35,7 +37,9 @@ if ! echo "y" | _pts_confirm_trust "$target" "test reason"; then
     echo "FAIL: approving should have succeeded" >&2
     exit 1
 fi
-[[ -f "$target.trusted-sha256" ]] || { echo "FAIL: approval should write a trust marker" >&2; exit 1; }
+[[ -f "$trust_marker" ]] || { echo "FAIL: approval should write a user-owned trust marker" >&2; exit 1; }
+[[ "$(stat -c '%a' "$trust_marker")" == 600 ]] || { echo "FAIL: trust marker should be mode 600" >&2; exit 1; }
+[[ ! -e "$target.trusted-sha256" ]] || { echo "FAIL: trust marker must not live beside project file" >&2; exit 1; }
 
 # 4. Re-running with the SAME content must succeed without prompting again
 #    (no stdin provided at all — if this reads from stdin it hangs/fails).
@@ -53,5 +57,11 @@ if _pts_confirm_trust "$target" "test reason" </dev/null; then
     echo "FAIL: changed content should require re-approval, not inherit old trust" >&2
     exit 1
 fi
+
+if _pts_validate_volume '/:/hostroot'; then
+    echo "FAIL: host-root volume should be rejected" >&2
+    exit 1
+fi
+_pts_validate_volume '/home/will/work/docker_files:/mnt:ro' || { echo "FAIL: safe absolute read-only volume should be accepted" >&2; exit 1; }
 
 printf 'Trust gate checks passed\n'

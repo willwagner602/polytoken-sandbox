@@ -50,37 +50,42 @@ _pts_stage_ponytail() {
 }
 
 # Gates a project-local `.polytoken/` extension file (Containerfile or
-# volumes) behind one-time interactive confirmation before it's built/mounted
-# — without this, cloning an untrusted repo and running `pts` inside it lets
-# that repo silently extend the image or bind-mount arbitrary host paths
-# (e.g. a `.polytoken/volumes` line of `/:/hostroot`) into an already
-# --privileged container with live API keys and a GitHub token. Approval is
-# pinned to a sha256 of the file's content, not just "this project", in a
-# marker alongside it — so editing the file after approval (a supply-chain
-# swap: get a benign version trusted once, then change it) re-prompts rather
-# than silently inheriting the old trust decision. Markers live under
-# `.polytoken/` (gitignored, per-project, never committed).
+# volumes) behind one-time interactive confirmation before it's built/mounted.
+# The content hash is stored in a user-owned state directory, never beside the
+# project-controlled file, so a repository cannot pre-seed or rewrite approval.
 _pts_confirm_trust() {
-    local target_file="$1" reason="$2"
-    local trust_marker="$target_file.trusted-sha256"
+    local target_file="$1" reason="$2" target_dir trust_root trust_marker
     local current_hash
+    target_dir="$(cd "$(dirname "$target_file")" && pwd -P)"
+    trust_root="${XDG_STATE_HOME:-$HOME/.local/state}/polytoken/pts/trust"
+    trust_marker="$trust_root/$(_pts_project_hash "$target_dir")-$(basename "$target_file").sha256"
+    mkdir -p -m 700 "$trust_root" || return 1
     current_hash="$(sha256sum "$target_file" | cut -d' ' -f1)"
-    if [[ -f "$trust_marker" && "$(<"$trust_marker")" == "$current_hash" ]]; then
+    if [[ -f "$trust_marker" && "$(<"$trust_marker")" == "$current_hash" ]] &&
+        [[ ! -L "$trust_marker" && "$(stat -c '%a' "$trust_marker" 2>/dev/null)" == 600 ]]; then
         return 0
     fi
     echo "pts: $target_file $reason" >&2
-    # Bounded, not unconditional: EOF (piped/closed stdin) returns immediately
-    # (declined); a genuinely interactive terminal gets up to 30s to answer;
-    # an inherited-but-silent stream (e.g. backgrounded invocation) times out
-    # rather than hanging forever.
     local reply=""
     read -r -t 30 -p "pts: trust and apply this file? [y/N] " reply || true
     if [[ "$reply" =~ ^[Yy]$ ]]; then
-        printf '%s\n' "$current_hash" >"$trust_marker"
+        local tmp="$trust_marker.tmp.$$.${RANDOM}"
+        (umask 077; printf '%s\n' "$current_hash" >"$tmp") || return 1
+        chmod 600 "$tmp" && mv -f -- "$tmp" "$trust_marker" || { rm -f -- "$tmp"; return 1; }
         return 0
     fi
     echo "pts: not trusted — skipping $target_file for this run." >&2
     return 1
+}
+_pts_validate_volume() {
+    local spec="$1" host target opts
+    IFS=: read -r host target opts <<<"$spec"
+    [[ "$host" == /* && "$target" == /* && "$host" != / ]] || return 1
+    case "$host" in
+        /|/run|/proc|/sys|/dev|/etc|/root|/home|/tmp|/var/lib|/var/run|/var/log|/home/*/.codex|/home/*/.local/share/polytoken/auth/*)
+            return 1 ;;
+    esac
+    return 0
 }
 
 # Managed PTS lifecycle helpers. These deliberately use Podman's label-filtered
@@ -156,7 +161,7 @@ _pts_attach_exact() {
     [[ "$schema" == "$_pts_schema" ]] || { echo "pts: unsupported PTS launcher schema" >&2; return 1; }
     [[ "$status" == running ]] || { echo "pts: container $id is not running (state: $status)" >&2; return 1; }
     [[ -n "$workdir" && "$workdir" == /* ]] || { echo "pts: managed workdir is invalid" >&2; return 1; }
-    exec podman exec -it --workdir "$workdir" "$full" /opt/polytoken-bin/polytoken
+    exec podman attach --sig-proxy=true "$full"
 }
 _pts_management() {
     local command="$1" query="${2:-}" project="" hash id line
@@ -164,7 +169,7 @@ _pts_management() {
         project="$(_pts_project_path "$(pwd)")" || { echo "pts: current project cannot be resolved" >&2; return 1; }
     fi
     case "$command" in
-        ps) printf '%-14s %-28s %-12s %s\n' ID NAME STATUS PROJECT; while IFS= read -r id; do line="$(_pts_inspect "$id" 2>/dev/null || true)"; [[ -n "$line" ]] && printf '%s\n' "$line"; done < <(_pts_ids); return 0 ;;
+        ps) printf '%-14s %-28s %-12s %s\n' ID NAME STATUS PROJECT; while IFS= read -r id; do line="$(_pts_inspect "$id" 2>/dev/null || true)"; [[ -n "$line" ]] || continue; IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"; printf '%-14.12s %-28.28s %-12s %s\n' "$full" "${name#/}" "$status" "$project"; done < <(_pts_ids); return 0 ;;
         attach|stop|stats|diagnose) id="$(_pts_resolve "$query" "$([[ -n "$query" ]] && echo || echo "$(_pts_project_hash "$project")")")" || return 1 ;;
         prune) local answer; mapfile -t ids < <(_pts_ids); for id in "${ids[@]}"; do [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && printf '%s\n' "$id"; done; read -r -p 'pts: remove stopped managed containers? [y/N] ' answer || return 1; [[ "$answer" =~ ^[Yy]$ ]] || return 0; for id in "${ids[@]}"; do [[ -n "$id" ]] && [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && podman rm "$id"; done; return 0 ;;
         *) return 2 ;;
@@ -246,7 +251,9 @@ pts() {
     local project_containerfile="$workdir/.polytoken/Containerfile"
     if [[ -f "$project_containerfile" ]] && _pts_confirm_trust "$project_containerfile" \
         "will be built and used as this project's sandbox image"; then
-        image="localhost/polytoken-sandbox-$(basename "$workdir"):latest"
+        local containerfile_hash
+        containerfile_hash="$(sha256sum "$project_containerfile" | cut -c1-16)"
+        image="localhost/polytoken-sandbox-$(_pts_project_hash "$canonical_project")-$containerfile_hash:latest"
         if ! podman image exists "$image" 2>/dev/null; then
             echo "Building project sandbox image (one-time setup)..." >&2
             podman build -t "$image" -f "$project_containerfile" "$(dirname "$project_containerfile")" >&2 || return 1
@@ -322,7 +329,10 @@ pts() {
     # This is separate from Polytoken's auth store above.
     local codex_cli_host_dir="$HOME/.codex"
     local codex_cli_dir="$state_dir/.codex"
-    mkdir -p "$codex_cli_host_dir" "$codex_cli_dir"
+    local share_codex_cli="${PTS_SHARE_CODEX:-0}"
+    if [[ "$share_codex_cli" == 1 ]]; then
+        mkdir -p "$codex_cli_host_dir" "$codex_cli_dir"
+    fi
 
     # NineAngel ("angel") is a multi-persona code-review skill, adapted from
     # github.com/PropterMalone/NineAngel (vendored as a pinned git submodule
@@ -358,10 +368,12 @@ pts() {
         -v "$workdir:$workdir"
         -v "polytoken-sandbox-bin:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
-        -v "$codex_cli_host_dir:$codex_cli_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
+    if [[ "$share_codex_cli" == 1 ]]; then
+        volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
+    fi
     local host_binary="$HOME/.local/bin/polytoken"
     if [[ -f "$host_binary" ]]; then
         volumes+=(-v "$host_binary:/opt/polytoken-seed/polytoken:ro")
@@ -379,7 +391,11 @@ pts() {
         "will have every line bind-mounted verbatim into this --privileged container"; then
         local _volume_line
         while IFS= read -r _volume_line || [[ -n "$_volume_line" ]]; do
-            [[ -z "$_volume_line" ]] && continue
+            [[ -z "$_volume_line" || "$_volume_line" == \#* ]] && continue
+            if ! _pts_validate_volume "$_volume_line"; then
+                echo "pts: refusing unsafe volume specification: $_volume_line" >&2
+                return 1
+            fi
             volumes+=(-v "$_volume_line")
         done <"$project_volumes"
         unset _volume_line
@@ -494,14 +510,13 @@ exec /opt/polytoken-bin/polytoken "$@"
     _pts_abnormal_cleanup() {
         ((cleanup_started)) && return 0
         cleanup_started=1
+        trap - HUP TERM INT
         [[ -n "$container_id" ]] || return 0
         _pts_diag "$container_id" "$canonical_project"
         _pts_stop_exact "$container_id" || true
     }
     _pts_owner_signal() { abnormal_owner=1; _pts_abnormal_cleanup; exit 143; }
-    _pts_forward_int() { return 0; }
-    trap _pts_owner_signal HUP TERM
-    trap _pts_forward_int INT
+    trap _pts_owner_signal HUP TERM INT
 
     GH_TOKEN="$gh_token" container_id="$(podman create -it \
         --name "$container_name" \

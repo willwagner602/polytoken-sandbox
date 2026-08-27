@@ -9,9 +9,11 @@ from the host filesystem; the rest of `$HOME` is not mounted by default.
 
 A repository's `.polytoken/volumes` (and `.polytoken/Containerfile`) is ignored
 until the operator interactively confirms it — approval is pinned to a sha256
-of the file's content, so editing it afterward requires re-approval rather than
-silently reusing the old decision. Extra mounts are passed directly to Podman
-and can grant broad host access, so only approve files from projects you trust.
+of the file's content in user-owned state, so a repository cannot pre-seed the
+approval and editing it afterward requires re-approval. Extra mounts must use
+absolute paths and pass PTS's sensitive-path checks; only approve files from
+projects you trust. Host `~/.codex` state is not mounted unless
+`PTS_SHARE_CODEX=1` is explicitly set.
 
 ## Contents
 
@@ -65,7 +67,7 @@ and can grant broad host access, so only approve files from projects you trust.
 ```bash
 pts                    # continue the most recent project session, or reconnect live
 pts ps                 # list all managed containers
-pts attach [ID|name]   # reconnect to a running managed container
+pts attach [ID|name]   # reattach to the original running managed session
 pts stop [ID|name]     # stop one exact managed container
 pts stats [ID|name]    # show one-shot resource usage
 pts diagnose [ID|name] # capture bounded operational diagnostics

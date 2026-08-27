@@ -61,15 +61,15 @@ pts: /path/to/project/.polytoken/volumes will have every line bind-mounted verba
 pts: trust and apply this file? [y/N]
 ```
 
-Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
+Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. The marker is stored in user-owned state under `$XDG_STATE_HOME` (or `~/.local/state`) with mode 600, not in the project tree. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
 
-After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line, for example:
+After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths and rejects host-root, system, runtime, and credential paths; for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
 ```
 
-These mounts are passed through as written once approved. They can expose arbitrary host paths or writable destinations, so only approve files from projects you trust.
+These mounts are passed through once approved after the path checks above. Writable mounts can still expose project-trusted host paths, so only approve files from projects you trust.
 
 ## Project layout and persistence
 
@@ -112,7 +112,7 @@ Container:  $HOME/.local/share/polytoken/auth/codex/
 Mode:       read/write
 ```
 
-This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. The OpenAI Codex CLI is a separate tool: its `~/.codex/` state is mounted independently so `codex login` and ChatGPT/subscription authentication can be reused inside PTS. The two auth stores must not be conflated.
+This permits one `polytoken auth provider login --provider codex` to serve both host Polytoken and PTS. The OpenAI Codex CLI is a separate tool. Its `~/.codex/` state is not mounted by default; set `PTS_SHARE_CODEX=1` explicitly when reusing Codex login state inside PTS is required. The two auth stores must not be conflated.
 
 ## Nested containers and Docker
 
