@@ -23,7 +23,8 @@ This is infrastructure around Polytoken, not the Polytoken application source. T
 
 ## Launch flow
 
-Running `pts` from a project directory follows this shape:
+Running bare `pts` from a project directory defaults to `polytoken continue` (without a session ID), which opens Polytoken's most-recent-session picker; if exactly one live managed container exists, PTS reconnects to it instead. Explicit arguments such as `pts continue SESSION_ID` remain passthrough commands. Running `pts` from a project directory follows this shape. Application containers use default limits of 12 GiB memory, 16 GiB total memory+swap, and 2048 PIDs; `PTS_MEMORY`, `PTS_MEMORY_SWAP`, `PTS_PIDS_LIMIT`, and `PTS_STOP_TIMEOUT` override the documented boundaries. Operators can use `pts ps`, `pts attach`, `pts stop`, `pts stats`, `pts diagnose`, and `pts prune`; intentional detach retains a bounded container while quit/abnormal termination cleans it up and `pts continue SESSION_ID` replays durable history. When the installed Polytoken binary is unavailable, provider-free live-session and durable-continue integration proofs are blocked rather than inferred.
+
 
 1. Confirm rootless Podman is available.
 2. Build `localhost/polytoken-sandbox:latest` when absent or when the `Containerfile` hash changes.

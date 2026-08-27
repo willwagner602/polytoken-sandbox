@@ -63,9 +63,23 @@ and can grant broad host access, so only approve files from projects you trust.
 ## Usage
 
 ```bash
-pts                    # launch polytoken TUI in the sandbox
-pts --print-session    # pass arguments through to polytoken
+pts                    # continue the most recent project session, or reconnect live
+pts ps                 # list all managed containers
+pts attach [ID|name]   # reconnect to a running managed container
+pts stop [ID|name]     # stop one exact managed container
+pts stats [ID|name]    # show one-shot resource usage
+pts diagnose [ID|name] # capture bounded operational diagnostics
+pts prune              # confirm removal of stopped managed containers
+pts -- <args>          # pass an otherwise-colliding command to polytoken
 ```
+
+Application containers are bounded by default to 12 GiB memory, 16 GiB total
+memory+swap, and 2048 PIDs. Override these with `PTS_MEMORY`,
+`PTS_MEMORY_SWAP`, and `PTS_PIDS_LIMIT`; `PTS_STOP_TIMEOUT` controls the
+10-second default graceful-stop window. Podman validates native limit syntax and
+platform support. `/detach` or Ctrl+D intentionally leaves the bounded container
+running; `/quit` and abnormal wrapper termination clean it up. After cleanup,
+`pts continue SESSION_ID` replays durable project history.
 
 Polytoken's own config/cache/auth/session state lives per-project, under
 `<project-dir>/.polytoken/`, seeded from `config-template.yaml` on first

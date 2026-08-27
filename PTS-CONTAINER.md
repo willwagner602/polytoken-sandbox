@@ -2,6 +2,10 @@
 
 `pts` is a shell function that runs Polytoken inside a rootless Podman container. It provides a repeatable Fedora-based development environment with project-oriented filesystem isolation. PTS is intended for trusted projects, not hostile code: nested-container support uses privileged execution, host networking, devices, selected credentials, and disabled SELinux labels.
 
+## Operator commands
+
+Use `pts` to continue the most recent project session, or reconnect to the sole running managed container. Use `pts ps`, `pts attach [ID|name]`, `pts stop [ID|name]`, `pts stats [ID|name]`, `pts diagnose [ID|name]`, and `pts prune`. Targets are resolved only from PTS-owned labels and destructive operations use exact full IDs. `pts continue SESSION_ID` replays durable history; it is distinct from live detach/reattach.
+
 ## What the container provides
 
 The shared image is built from `quay.io/fedora/fedora-minimal:latest` and installs:
@@ -25,7 +29,12 @@ PTS launches the image with:
 - host networking (`--network=host`), allowing provider API calls without a container-private network
 - the current project directory as the working directory
 - `HOME` redirected to `<project>/.polytoken`
-- `--rm`, so the application container itself is removed after exit; persistent state is stored in bind mounts and project files
+- a unique PTS-managed name and ownership/project labels, so every container is attributable without broad process matching
+- `--init`, memory `12g`, total memory+swap `16g`, and PID limit `2048` by default; override with `PTS_MEMORY`, `PTS_MEMORY_SWAP`, and `PTS_PIDS_LIMIT`
+- managed `create`/`start -ai` lifecycle; abnormal HUP/TERM cleanup uses the recorded full ID, `PTS_STOP_TIMEOUT` (default 10 seconds), then bounded kill escalation
+- deliberate `/detach` and Ctrl+D retain the running bounded container; `/quit` removes it after classification. `pts continue SESSION_ID` replays durable history after termination
+- `pts ps`, `attach`, `stop`, `stats`, `diagnose`, and confirmed `prune` operate only on PTS-labeled containers
+- persistent state is stored in bind mounts and project files; SIGKILL, host crash, and power loss can leave a labeled stopped container for explicit recovery
 
 The host Polytoken binary is mounted read-only at `/opt/polytoken-seed/polytoken` when present. On the first run, PTS copies it into the shared `polytoken-sandbox-bin` volume and executes `/opt/polytoken-bin/polytoken` from then on. Run `pts update` to update that persistent copy; changing the host binary alone does not replace an existing volume copy.
 
@@ -121,6 +130,26 @@ A project may customize the environment without changing the shared image:
 - `ponytail/` — supplies the copied hooks and configuration used by the launcher
 
 These files are read from the host before the container starts. The project-specific Containerfile is built only when its image is absent; rebuild it manually when its dependencies change.
+
+## Diagnostics and incident response
+
+`pts diagnose` and abnormal cleanup write private, bounded bundles below
+`.polytoken/pts/diagnostics/<project-hash>/`. Bundles contain operational identity,
+state, exit/OOM indicators, effective limits, and bounded stats output when
+available. They do not contain container environments, credentials, credential
+files, prompts, complete session JSONL, command arguments, or unbounded logs.
+Diagnostics are best effort and never replace exact-ID cleanup. SIGKILL, host
+crash, and power loss can prevent capture and leave a stopped labeled container
+for later `pts ps`, `pts diagnose`, `pts stop`, or confirmed `pts prune` recovery.
+
+If bounded growth recurs, preserve the diagnostic bundle and identify the
+container/session/time window first. Reproduce with a known workload under the
+configured limit, then collect upstream-supported heap/allocation profiling and
+Polytoken metrics/logs in the Polytoken source environment. Compare session
+history size, task/subagent fan-out, caches, and heap growth as hypotheses—not
+conclusions—and do not copy credentials or full prompt/session contents into
+shared artifacts. Open a separate upstream fix only when measured retained
+allocations identify a cause.
 
 ## Security and operational boundaries
 
