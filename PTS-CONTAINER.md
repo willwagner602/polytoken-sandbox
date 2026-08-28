@@ -48,6 +48,7 @@ By default, PTS exposes only these host paths:
 | `~/.local/bin/polytoken` | `/opt/polytoken-seed/polytoken` | Read-only, if present | Initial source for the shared Polytoken binary volume |
 | `~/.local/share/polytoken/auth/codex/` | `$HOME/.local/share/polytoken/auth/codex/` | Read/write | Shared Polytoken Codex auth and token refresh |
 | `~/.bashrc.d/polytoken-sandbox/angel/skills/` | `$HOME/skills/` | Read-only | Angel skills |
+| `~/.bashrc.d/polytoken-sandbox/skills/container-release/` | `$HOME/skills/container-release/` | Read-only | Standalone container-release skill |
 | `~/.bashrc.d/polytoken-sandbox/angel/subagents/` | `$HOME/subagents/` | Read-only | Angel subagents |
 | `~/.job_digest/secrets.json` | Same absolute path | Read-only, if present | Job-digest credentials/data |
 | `~/.codex/` | `$HOME/.codex/` | Read/write | OpenAI Codex CLI ChatGPT/subscription login and CLI state |

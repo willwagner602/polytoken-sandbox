@@ -393,6 +393,7 @@ pts() {
         -v "polytoken-sandbox-bin:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
+        -v "$_pts_root/skills/container-release:$state_dir/skills/container-release:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
     if [[ "$share_codex_cli" == 1 ]]; then

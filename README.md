@@ -108,3 +108,11 @@ extensions, so this integration does not claim to provide native
 
 This is instruction-level guidance, not enforcement of model behavior. Run
 `bash ponytail/tests/test_hook.sh` to check mode persistence and hook output.
+
+## Standalone container-release skill
+
+PTS mounts `skills/container-release/` independently from the Angel namespace as
+`$HOME/skills/container-release/` in every project container. Invoke it explicitly
+with `@skill:container-release`. It reads a repository's `ci-cd.md` when present,
+then verifies that document against the repository's actual CI, image, runtime,
+and deployment files. It is not an Angel persona or review skill.
