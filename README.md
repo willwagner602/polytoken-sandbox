@@ -19,8 +19,9 @@ projects you trust. Host `~/.codex` state is not mounted unless
 
 - `polytoken-sandbox.sh` — the `pts` shell function (copy of the version
   sourced from `~/.bashrc.d/` — see setup below)
-- `Containerfile` — builds `localhost/polytoken-sandbox:latest`
-  (fedora-minimal + Python tooling, git, gh, Node/npm, Codex CLI, and container tools)
+- `Containerfile` — builds `localhost/polytoken-sandbox:latest`; the complete
+  installed-package and runtime inventory is documented in `PTS-CONTAINER.md`
+  and the copied `AGENTS.md`
 - `config-template.yaml` — secret-free polytoken config seeded into every
   new project's `.polytoken/` state dir on first run. Provider keys use
   env-var interpolation (`${OPENAI_API_KEY}`, etc.) — no literal secrets.

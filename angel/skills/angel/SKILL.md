@@ -10,6 +10,26 @@ they don't contaminate each other's perspectives, and hand the Integrator a clea
 input. Independence between personas is load-bearing — a panel of specialists who don't see each
 other's findings catches issues a single sharper reviewer misses.
 
+## 0. Per-run model override
+
+This skill accepts an optional model override in its invocation text:
+
+```text
+/angel --model provider:model
+```
+
+Parse `--model` followed by exactly one nonempty model identifier before beginning the review.
+The identifier is an operator-supplied model name, not project content. If `--model` is present
+without a value, appears more than once, or is mixed with an unsupported option, ask the operator
+to correct the invocation rather than silently falling back. Without `--model`, use each
+subagent definition's configured `polytoken.model` and `fallback_models` unchanged.
+
+When an override is present, pass it as the subagent tool's `model_override` for **every**
+subagent dispatched by this skill: Reader, each selected persona, Integrator, and each Verifier.
+Do not edit persona frontmatter or global model defaults, and record the effective override in
+the run report's preamble and handoff. The override applies to this Angel run only; it does not
+change the active Polytoken session model or persist after the run.
+
 This is a polytoken-native adaptation of [NineAngel](https://github.com/PropterMalone/NineAngel)
 (vendored at `~/angel/vendor/nineangel/` inside this sandbox, read-only — see that tree for the
 original Claude-Code-oriented design if you want more depth than this adaptation includes). This
