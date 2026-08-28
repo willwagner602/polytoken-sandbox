@@ -20,6 +20,7 @@ This is infrastructure around Polytoken, not the Polytoken application source. T
 - `AGENTS.md` — instructions copied into the effective Polytoken configuration so future agents understand repository conventions and the sandbox Docker environment.
 - `ponytail/` — Ponytail instructions, skills, hooks, and configuration propagated into each project’s Polytoken state.
 - `README.md` — setup and user-facing usage documentation.
+- `PTS-CONTAINER.md` — complete image package inventory, runtime mounts, persistence, authentication, and nested-container boundaries.
 
 ## Launch flow
 

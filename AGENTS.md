@@ -61,3 +61,18 @@ The `polytoken-sandbox.sh` launcher starts a Docker daemon inside the sandbox be
 - The daemon log is at `/tmp/dockerd.log` inside the sandbox if startup or container operations fail.
 - The sandbox image installs both Docker and Podman. Prefer Docker when the task specifically requires Docker; use Podman only when the task or existing project configuration calls for it.
 - The launcher continues into Polytoken if Docker does not become ready, so Docker-dependent work must verify readiness and report a clear error rather than silently assuming it works.
+
+## Installed tools and runtime capabilities
+
+The shared image is Fedora Minimal plus the following packages from `Containerfile`:
+
+- **Python:** `python3`, `python3-pip`, and `python3-pytest`
+- **Source and data tooling:** `git`, `gh`, `jq`, `golang`, and `zip`
+- **JavaScript/LSP:** `nodejs`, `npm`, and the globally installed `yaml-language-server` (also available as `yamlls`)
+- **Containers:** `podman`, `docker`, `docker-cli`, and `moby-engine`
+- **Browser/runtime libraries:** `nspr`, `nss`, `alsa-lib`, `atk`, `cups-libs`, `gtk3`, `libXcomposite`, `libXdamage`, `libXfixes`, `libXrandr`, `mesa-libgbm`, and `pango`
+- **Documents and diagnostics:** `poppler-utils`, `iproute`, and `procps-ng`
+
+The image also contains the nested-container prerequisites configured by `Containerfile`: setuid `newuidmap`/`newgidmap`, a subordinate UID/GID range for UID 1000, and container storage configured with the overlay driver and `ignore_chown_errors`. These support deliberately nested workflows; they do not mean a Docker daemon is running.
+
+At runtime, PTS additionally provides the project directory, the persistent Polytoken binary volume, selected Codex authentication, Angel skills/subagents, selected environment credentials, and optional reviewed mounts. See `PTS-CONTAINER.md` for the complete mount table, persistence model, security boundary, and extension points. The current launcher installs clients and runtime prerequisites but does not start or expose a Docker daemon.
