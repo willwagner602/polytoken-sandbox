@@ -177,13 +177,19 @@ _pts_stop_exact() {
     podman rm "$id" >/dev/null 2>&1 || { echo "pts: could not remove container $id; use pts ps/prune" >&2; return 1; }
 }
 _pts_attach_exact() {
-    local id="$1" line full name status exit phash project workdir memory swap pids init schema
+    local id="$1" line full name status exit phash project workdir memory swap pids init schema attach_status=0
     line="$(_pts_inspect "$id" 2>/dev/null)" || { echo "pts: cannot inspect managed container $id" >&2; return 1; }
     IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"
     [[ "$schema" == "$_pts_schema" ]] || { echo "pts: unsupported PTS launcher schema" >&2; return 1; }
     [[ "$status" == running ]] || { echo "pts: container $id is not running (state: $status)" >&2; return 1; }
     [[ -n "$workdir" && "$workdir" == /* ]] || { echo "pts: managed workdir is invalid" >&2; return 1; }
-    exec podman attach --sig-proxy=true "$full"
+    podman attach --sig-proxy=true "$full" || attach_status=$?
+    status="$(podman inspect --format '{{.State.Status}}' "$full" 2>/dev/null || true)"
+    if [[ "$status" != running ]]; then
+        _pts_diag "$full" "$project"
+        podman rm "$full" >/dev/null 2>&1 || echo "pts: cleanup failed for $full; use pts ps/prune" >&2
+    fi
+    return "$attach_status"
 }
 _pts_management() {
     local command="$1" query="${2:-}" project="" hash id line
@@ -235,7 +241,7 @@ pts() {
         fi
     fi
 
-    local base_image="localhost/polytoken-sandbox:latest"
+    local base_image="${PTS_BASE_IMAGE:-localhost/polytoken-sandbox:latest}"
 
     # Build the shared sandbox image (fedora-minimal + python3) on first
     # run. Cached afterwards; rebuild manually with:
@@ -333,7 +339,7 @@ pts() {
     # subordinate uid rather than your real one — it looked like it worked
     # (no error) but silently produced a directory owned by the wrong uid.
     # Cheap and idempotent, so it's safe to redo on every invocation.
-    local bin_volume="polytoken-sandbox-bin"
+    local bin_volume="${PTS_BIN_VOLUME:-polytoken-sandbox-bin}"
     podman run --rm -v "$bin_volume:/opt/polytoken-bin" \
         --entrypoint /bin/sh "$image" -c 'chown 0:0 /opt/polytoken-bin' >/dev/null
 
@@ -390,7 +396,7 @@ pts() {
     local secrets_file="$HOME/.job_digest/secrets.json"
     local -a volumes=(
         -v "$workdir:$workdir"
-        -v "polytoken-sandbox-bin:/opt/polytoken-bin"
+        -v "$bin_volume:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
         -v "$_pts_root/skills/container-release:$state_dir/skills/container-release:ro"
@@ -399,7 +405,7 @@ pts() {
     if [[ "$share_codex_cli" == 1 ]]; then
         volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
     fi
-    local host_binary="$HOME/.local/bin/polytoken"
+    local host_binary="${PTS_POLYTOKEN_SEED:-$HOME/.local/bin/polytoken}"
     if [[ ! -f "$host_binary" ]]; then
         host_binary="$(command -v polytoken 2>/dev/null || true)"
     fi

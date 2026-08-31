@@ -27,7 +27,7 @@ podman stop --time 1 "$id" >/dev/null
 printf 'Generic Podman lifecycle checks passed\n'
 if command -v python3 >/dev/null 2>&1; then
   if python3 "$root/tests/pts_pty_harness.py"; then
-    printf 'Provider-free Polytoken PTY lifecycle checks passed\n'
+    printf 'Provider-free PTS end-to-end lifecycle checks passed\n'
   else
     pty_status=$?
     [[ "$pty_status" -eq 2 ]] || exit "$pty_status"
