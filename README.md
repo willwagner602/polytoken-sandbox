@@ -17,8 +17,8 @@ projects you trust. Host `~/.codex` state is not mounted unless
 
 ## Contents
 
-- `polytoken-sandbox.sh` — the `pts` shell function (copy of the version
-  sourced from `~/.bashrc.d/` — see setup below)
+- `polytoken-sandbox.sh` — the `pts` shell function (symlinked into
+  `~/.bashrc.d/` for sourcing — see setup below)
 - `Containerfile` — builds `localhost/polytoken-sandbox:latest`; the complete
   installed-package and runtime inventory is documented in `PTS-CONTAINER.md`
   and the copied `AGENTS.md`
@@ -40,15 +40,27 @@ projects you trust. Host `~/.codex` state is not mounted unless
    git clone https://github.com/willwagner602/polytoken-sandbox ~/.bashrc.d/polytoken-sandbox
    ```
 
-2. Copy the shell function up one level so `~/.bashrc`'s
+2. Symlink the shell function up one level so `~/.bashrc`'s
    `for rc in ~/.bashrc.d/*` loop sources it automatically (anything that
    isn't a shell script has to live in the subdirectory, or it gets
    misinterpreted as one):
 
    ```bash
-   cp ~/.bashrc.d/polytoken-sandbox/polytoken-sandbox.sh ~/.bashrc.d/polytoken-sandbox.sh
+   ln -sfn ~/.bashrc.d/polytoken-sandbox/polytoken-sandbox.sh ~/.bashrc.d/polytoken-sandbox.sh
    source ~/.bashrc.d/polytoken-sandbox.sh
    ```
+
+   The symlink keeps the sourced launcher in lockstep with this checkout —
+   there is no second copy to drift stale. Two consequences to know:
+
+   - The launcher you get follows whichever branch is checked out; switching
+     branches changes the launcher your next `pts` uses.
+   - Shells that are already running keep the previously sourced `pts`
+     function in memory. After pulling or switching branches, run
+     `source ~/.bashrc` (or open a new terminal) in the shell you launch
+     `pts` from. If a session seems to be missing new behavior, check what
+     that shell is actually running with `declare -f pts | grep -c GH_TOKEN`
+     (or a similar marker) before assuming the checkout is stale.
 
 3. Make sure `~/.local/bin/polytoken` exists. PTS seeds the shared
    `polytoken-sandbox-bin` volume from this binary on first use; later runs use
