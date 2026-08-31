@@ -17,6 +17,8 @@ test_no_unsafe_operations() {
   grep -Fq -- 'podman start -ai --sig-proxy=true' "$root/polytoken-sandbox.sh"
   ! grep -Fq -- 'podman run --rm -it \\' "$root/polytoken-sandbox.sh"
   ! grep -Eq -- '-e GH_TOKEN=' "$root/polytoken-sandbox.sh"
+  grep -Fq -- 'local -x GH_TOKEN="$gh_token"' "$root/polytoken-sandbox.sh"
+  ! grep -Fq -- 'GH_TOKEN="$gh_token" container_id=' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'trap _pts_owner_signal HUP TERM INT' "$root/polytoken-sandbox.sh"
   ! grep -Fq -- '_pts_forward_int' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'polytoken_args=(continue)' "$root/polytoken-sandbox.sh"
@@ -28,6 +30,17 @@ test_management_is_early() {
   dispatch="$(grep -n 'local management_command' "$root/polytoken-sandbox.sh" | cut -d: -f1)"
   setup="$(grep -n 'podman image exists' "$root/polytoken-sandbox.sh" | head -1 | cut -d: -f1)"
   (( dispatch < setup ))
+}
+
+test_github_token_precedence() {
+  gh() {
+    [[ "$*" == 'auth token' ]] || return 1
+    printf 'gh-cli-token'
+  }
+
+  [[ "$(GH_TOKEN=explicit-gh GITHUB_TOKEN=explicit-github _pts_github_token)" == explicit-gh ]]
+  [[ "$(GH_TOKEN= GITHUB_TOKEN=explicit-github _pts_github_token)" == explicit-github ]]
+  [[ "$(GH_TOKEN= GITHUB_TOKEN= _pts_github_token)" == gh-cli-token ]]
 }
 
 test_fake_podman_resolution_and_stop() {
@@ -80,6 +93,7 @@ test_docs_contract() {
 test_slug_hash
 test_no_unsafe_operations
 test_management_is_early
+test_github_token_precedence
 test_fake_podman_resolution_and_stop
 test_diagnostics_do_not_dump_environment
 test_docs_contract

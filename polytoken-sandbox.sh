@@ -104,6 +104,15 @@ _pts_project_slug() {
 }
 _pts_name() { printf 'pts-%s-%s-%s' "$(_pts_project_slug "$1")" "$(_pts_project_hash "$2")" "$(date -u +%Y%m%d%H%M%S)-$$-$RANDOM"; }
 _pts_validate_nonnegative() { [[ "$2" =~ ^[0-9]+$ ]] || { echo "pts: $1 must be a non-negative integer" >&2; return 1; }; }
+_pts_github_token() {
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        printf '%s' "$GH_TOKEN"
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        printf '%s' "$GITHUB_TOKEN"
+    elif command -v gh &>/dev/null; then
+        gh auth token 2>/dev/null
+    fi
+}
 _pts_ids() { podman ps -a --filter "label=pts.owner=$_pts_owner" --format '{{.ID}}'; }
 _pts_running_for_project() {
     local project_hash="$1" id line full name status exit phash project workdir memory swap pids init schema
@@ -413,15 +422,13 @@ pts() {
     done
     unset _k _v _key_names
 
-    # Fetch the GitHub token fresh each run (never cached to disk or shell
-    # env) and wire it up as a git credential helper via GIT_CONFIG_*, so
-    # the host's ~/.gitconfig (whose helper calls the host's `gh`, and
-    # isn't mounted into the container) is never touched. The same
-    # GH_TOKEN also auto-authenticates the container's own `gh` CLI.
+    # Prefer a token explicitly supplied by the caller, accepting both names
+    # commonly used for GitHub auth. Fall back to the host gh credential store.
+    # Normalize the result to GH_TOKEN for the container's gh CLI and Git
+    # credential helper; never cache the token to disk.
     local gh_token=""
-    if command -v gh &>/dev/null; then
-        gh_token="$(gh auth token 2>/dev/null)"
-    fi
+    gh_token="$(_pts_github_token)"
+    local -x GH_TOKEN="$gh_token"
 
     # Git identity for commits made inside the container. Wired via
     # GIT_CONFIG_* rather than mounting the host's ~/.gitconfig, since
@@ -518,7 +525,7 @@ exec /opt/polytoken-bin/polytoken "$@"
     _pts_owner_signal() { abnormal_owner=1; _pts_abnormal_cleanup; exit 143; }
     trap _pts_owner_signal HUP TERM INT
 
-    GH_TOKEN="$gh_token" container_id="$(podman create -it \
+    container_id="$(podman create -it \
         --name "$container_name" \
         --label "pts.owner=$_pts_owner" \
         --label "pts.schema=$_pts_schema" \
@@ -542,6 +549,8 @@ exec /opt/polytoken-bin/polytoken "$@"
         -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e ZAI_API_KEY \
         -e NEURALWATT_API_KEY -e OPENCODE_API_KEY -e BRAVE_API_KEY \
         -e TAVILY_API_KEY -e EXA_API_KEY -e KAGI_API_KEY \
+        -e GEMINI_API_KEY -e DEEPSEEK_API_KEY -e GROQ_API_KEY \
+        -e OPENROUTER_API_KEY -e MAP_KEY -e FIRE_PROVIDER_MODE \
         -e PONYTAIL_DEFAULT_MODE "${git_env[@]}" \
         --entrypoint /bin/sh "$image" -c "$seed_and_exec" sh "${polytoken_args[@]}")" || return 1
     container_id="${container_id##*$'\n'}"
