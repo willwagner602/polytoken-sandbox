@@ -99,8 +99,8 @@ Provider API keys are read from exported variables in the host `~/.bashrc` on ev
 
 GitHub authentication is handled separately:
 
-- PTS obtains a GitHub token using the host `gh auth token` command.
-- It passes the token as `GH_TOKEN`.
+- PTS prefers an exported `GH_TOKEN`, then `GITHUB_TOKEN`, and otherwise obtains a token using the host `gh auth token` command.
+- It passes the selected token into the container as `GH_TOKEN`.
 - It configures Git's GitHub credential helper through `GIT_CONFIG_*` variables.
 - The host `~/.gitconfig` is not mounted.
 
