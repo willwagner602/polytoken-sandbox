@@ -33,6 +33,11 @@
 #
 # Requirements: podman installed and configured for rootless use.
 
+# Resolve bundled files from this script, not HOME: pts deliberately redirects
+# HOME inside the child container and may also be invoked from a resumed shell
+# where HOME already points at a project state directory.
+_pts_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
 # Copies Ponytail's hook script, hook wiring, and default-mode config into
 # the per-project polytoken config dir, plus this repo's own root AGENTS.md
 # (the "lazy senior dev" instructions the hook injects). Extracted from
@@ -41,12 +46,12 @@
 _pts_stage_ponytail() {
     local global_config_dir="$1"
     mkdir -p "$global_config_dir"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/AGENTS.md" "$global_config_dir/AGENTS.md"
+    cp "$_pts_root/AGENTS.md" "$global_config_dir/AGENTS.md"
     mkdir -p "$global_config_dir/hooks"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks/ponytail-hook.sh" "$global_config_dir/hooks/ponytail-hook.sh"
+    cp "$_pts_root/ponytail/hooks/ponytail-hook.sh" "$global_config_dir/hooks/ponytail-hook.sh"
     chmod 755 "$global_config_dir/hooks/ponytail-hook.sh"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/hooks.json" "$global_config_dir/hooks.json"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/ponytail/config.json" "$global_config_dir/ponytail-config.json"
+    cp "$_pts_root/ponytail/hooks.json" "$global_config_dir/hooks.json"
+    cp "$_pts_root/ponytail/config.json" "$global_config_dir/ponytail-config.json"
 }
 
 # Gates a project-local `.polytoken/` extension file (Containerfile or
@@ -78,11 +83,19 @@ _pts_confirm_trust() {
     return 1
 }
 _pts_validate_volume() {
-    local spec="$1" host target opts
+    local spec="$1" host target opts resolved
     IFS=: read -r host target opts <<<"$spec"
     [[ "$host" == /* && "$target" == /* && "$host" != / ]] || return 1
-    case "$host" in
-        /|/run|/proc|/sys|/dev|/etc|/root|/home|/tmp|/var/lib|/var/run|/var/log|/home/*/.codex|/home/*/.local/share/polytoken/auth/*)
+    # Check the canonical source, not the lexical one: podman binds the
+    # symlink target, so an innocent-looking path can resolve into a
+    # credential store. Non-existent sources fail closed (podman would
+    # otherwise auto-create them).
+    # polytoken: a TOCTOU window remains — a symlink can be swapped between
+    # validation and `podman create`; mounting the validated resolved path
+    # instead of the approved line is the upgrade if that matters.
+    resolved="$(realpath -e -- "$host" 2>/dev/null)" || return 1
+    case "$resolved" in
+        /|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/etc|/etc/*|/root|/root/*|/home|/tmp|/var/lib|/var/lib/*|/var/run|/var/log|/var/log/*|/home/*/.ssh*|/home/*/.aws*|/home/*/.gnupg*|/home/*/.config*|/home/*/.docker*|/home/*/.kube*|/home/*/.codex*|/home/*/.netrc*|/home/*/.local/share/polytoken*)
             return 1 ;;
     esac
     return 0
@@ -233,7 +246,7 @@ pts() {
     # try to source it as a shell script.
     if ! podman image exists "$base_image" 2>/dev/null; then
         echo "Building sandbox image (one-time setup)..." >&2
-        podman build -t "$base_image" "$HOME/.bashrc.d/polytoken-sandbox" >&2 || return 1
+        podman build --network=host --dns 10.0.0.1 --security-opt label=disable -t "$base_image" "$_pts_root" >&2 || return 1
     fi
 
     local workdir canonical_project project_hash container_name
@@ -282,7 +295,9 @@ pts() {
     local global_config_dir="$state_dir/.config/polytoken"
     local project_config="$global_config_dir/config.yaml"
     mkdir -p "$global_config_dir"
-    cp "$HOME/.bashrc.d/polytoken-sandbox/config-template.yaml" "$project_config"
+    mkdir -p "$state_dir/.docker/run"
+    ln -sfn /tmp/run-0/docker.sock "$state_dir/.docker/run/docker.sock"
+    cp "$_pts_root/config-template.yaml" "$project_config"
     _pts_stage_ponytail "$global_config_dir"
 
     # Polytoken auto-discovers project context from a file named AGENTS.md
@@ -359,8 +374,8 @@ pts() {
     # alongside Angel's without further plumbing (accepted tradeoff).
     # Angel's own per-project run/memory state (read-write, NOT mounted —
     # this container writes here) lives under .polytoken/angel/.
-    local angel_skills_dir="$HOME/.bashrc.d/polytoken-sandbox/angel/skills"
-    local angel_subagents_dir="$HOME/.bashrc.d/polytoken-sandbox/angel/subagents"
+    local angel_skills_dir="$_pts_root/angel/skills"
+    local angel_subagents_dir="$_pts_root/angel/subagents"
     mkdir -p "$state_dir/skills" "$state_dir/subagents" "$state_dir/angel/memory"
 
     # Only the invocation directory (which contains the polytoken state
@@ -378,12 +393,16 @@ pts() {
         -v "polytoken-sandbox-bin:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
+        -v "$_pts_root/skills/container-release:$state_dir/skills/container-release:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
     if [[ "$share_codex_cli" == 1 ]]; then
         volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
     fi
     local host_binary="$HOME/.local/bin/polytoken"
+    if [[ ! -f "$host_binary" ]]; then
+        host_binary="$(command -v polytoken 2>/dev/null || true)"
+    fi
     if [[ -f "$host_binary" ]]; then
         volumes+=(-v "$host_binary:/opt/polytoken-seed/polytoken:ro")
     fi
@@ -418,7 +437,13 @@ pts() {
     local _k _v
     for _k in "${_key_names[@]}"; do
         _v="$(grep -oP "(?<=export ${_k}=\")[^\"]*" "$HOME/.bashrc" 2>/dev/null | tail -n1)"
-        [[ -n "$_v" ]] && export "$_k=$_v"
+        # Unset when absent: a key removed or rotated out of ~/.bashrc must not
+        # survive from an older shell environment into the container.
+        if [[ -n "$_v" ]]; then
+            export "$_k=$_v"
+        else
+            unset "$_k" 2>/dev/null || true
+        fi
     done
     unset _k _v _key_names
 
@@ -522,6 +547,37 @@ if [ ! -x /opt/polytoken-bin/polytoken ]; then
         exit 1
     fi
 fi
+
+# Start the nested daemon before dropping Polytoken to the invoking UID. The
+# outer PTS container is privileged specifically for this root-owned daemon;
+# rootless dockerd cannot create its UID map reliably in this environment.
+export XDG_RUNTIME_DIR=/tmp/run-0
+export DOCKER_HOST=unix:///tmp/run-0/docker.sock
+export DOCKER_CONFIG=/tmp/docker-cli-config
+export DOCKER_CONTEXT=
+export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG"
+dockerd --host=unix:///tmp/run-0/docker.sock --storage-driver=vfs --iptables=false --bridge=none > /tmp/dockerd.log 2>&1 &
+daemon_pid=$!
+ready=0
+for _ in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+if [ "$ready" != 1 ]; then
+    echo "pts: Docker daemon did not become ready; continuing without it (docker commands will fail)." >&2
+    cat /tmp/dockerd.log >&2
+else
+    chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" "$XDG_RUNTIME_DIR/docker.sock"
+    chmod 660 "$XDG_RUNTIME_DIR/docker.sock"
+fi
+
 case "$1" in
     auth|update) ;;
     *)
@@ -533,11 +589,14 @@ case "$1" in
         fi
         ;;
 esac
+if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" = 0 ] && [ -n "${PTS_UID:-}" ]; then
+    exec setpriv --reuid="$PTS_UID" --regid="${PTS_GID:-$PTS_UID}" --clear-groups /opt/polytoken-bin/polytoken "$@"
+fi
 exec /opt/polytoken-bin/polytoken "$@"
 '
 
     local container_id=""
-    local primary_status=0 abnormal_owner=0 cleanup_started=0
+    local primary_status=0 abnormal_owner=0 cleanup_started=0 pts_attach_pid=""
     _pts_abnormal_cleanup() {
         ((cleanup_started)) && return 0
         cleanup_started=1
@@ -546,7 +605,15 @@ exec /opt/polytoken-bin/polytoken "$@"
         _pts_diag "$container_id" "$canonical_project"
         _pts_stop_exact "$container_id" || true
     }
-    _pts_owner_signal() { abnormal_owner=1; _pts_abnormal_cleanup; exit 143; }
+    _pts_owner_signal() {
+        abnormal_owner=1
+        _pts_abnormal_cleanup
+        # The container the attach client is streaming from is stopped by
+        # the cleanup above; kill the client too so no orphaned
+        # `podman start` outlives this wrapper.
+        [[ -n "$pts_attach_pid" ]] && kill "$pts_attach_pid" 2>/dev/null
+        exit 143
+    }
     trap _pts_owner_signal HUP TERM INT
 
     container_id="$(podman create -it \
@@ -562,6 +629,7 @@ exec /opt/polytoken-bin/polytoken "$@"
         --memory-swap "$pts_memory_swap" \
         --pids-limit "$pts_pids_limit" \
         --userns=keep-id:size=65536 \
+        --user 0 \
         --security-opt label=disable \
         --network=host \
         --device /dev/fuse \
@@ -575,16 +643,40 @@ exec /opt/polytoken-bin/polytoken "$@"
         -e TAVILY_API_KEY -e EXA_API_KEY -e KAGI_API_KEY \
         -e GEMINI_API_KEY -e DEEPSEEK_API_KEY -e GROQ_API_KEY \
         -e OPENROUTER_API_KEY -e MAP_KEY -e FIRE_PROVIDER_MODE \
-        -e PONYTAIL_DEFAULT_MODE "${git_env[@]}" \
+        -e PONYTAIL_DEFAULT_MODE \
+        -e PTS_UID="$(id -u)" \
+        -e PTS_GID="$(id -g)" \
+        "${git_env[@]}" \
         --entrypoint /bin/sh "$image" -c "$seed_and_exec" sh "${polytoken_args[@]}")" || return 1
     container_id="${container_id##*$'\n'}"
-    printf 'pts: container=%s id=%.12s project=%s memory=%s memory+swap=%s pids=%s\n' \\
+    printf 'pts: container=%s id=%.12s project=%s memory=%s memory+swap=%s pids=%s\n' \
         "$container_name" "$container_id" "$canonical_project" "$pts_memory" "$pts_memory_swap" "$pts_pids_limit" >&2
     if ! _pts_inspect "$container_id" >/dev/null 2>&1; then
         podman rm "$container_id" >/dev/null 2>&1 || true
         return 1
     fi
-    podman start -ai --sig-proxy=true "$container_id" || primary_status=$?
+    # Background + `wait`, never a foreground call: bash defers trapped
+    # signals while it waits on a foreground external command, so a
+    # foreground `podman start -ai` would postpone this trap's cleanup
+    # until the attach client exited on its own — after terminal loss the
+    # container would keep running with nobody supervising it. `wait` is
+    # a builtin; a signal interrupts it and runs the trap immediately.
+    if [[ -t 0 && -t 1 ]]; then
+        # An interactive podman attach must own the terminal's foreground
+        # process group. Backgrounding it makes Bash/job-control or the TTY
+        # stop the client before Polytoken can answer cursor queries.
+        podman start -ai --sig-proxy=true "$container_id" || primary_status=$?
+    else
+        # Background + `wait` keeps non-interactive runs interruptible: bash
+        # runs the cleanup trap while the attach client is still alive.
+        local _pts_monitor_was_on=0
+        [[ "$-" == *m* ]] && _pts_monitor_was_on=1
+        set +m
+        podman start -ai --sig-proxy=true "$container_id" &
+        pts_attach_pid=$!
+        wait "$pts_attach_pid" || primary_status=$?
+        ((_pts_monitor_was_on)) && set -m
+    fi
     if ((abnormal_owner)); then
         exit 143
     fi
@@ -595,6 +687,6 @@ exec /opt/polytoken-bin/polytoken "$@"
         _pts_diag "$container_id" "$canonical_project"
         podman rm "$container_id" >/dev/null 2>&1 || echo "pts: cleanup failed for $container_id; use pts ps/prune" >&2
     fi
-    trap - HUP TERM
+    trap - HUP TERM INT
     return "$primary_status"
 }

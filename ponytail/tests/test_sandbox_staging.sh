@@ -31,10 +31,24 @@ check() {
     fi
 }
 
+# Staged content must match its source, not merely exist — an existence-only
+# check once let stale/empty staged files pass.
+check_matches() {
+    local src="$1" dst="$2"
+    if [[ -e "$dst" ]] && ! diff -q "$src" "$dst" >/dev/null; then
+        echo "FAIL: staged $(basename "$dst") doesn't match $src" >&2
+        fail=1
+    fi
+}
+
 check "$scratch/config/AGENTS.md"
 check "$scratch/config/hooks/ponytail-hook.sh"
 check "$scratch/config/hooks.json"
 check "$scratch/config/ponytail-config.json"
+check_matches "$repo_dir/AGENTS.md" "$scratch/config/AGENTS.md"
+check_matches "$repo_dir/ponytail/hooks/ponytail-hook.sh" "$scratch/config/hooks/ponytail-hook.sh"
+check_matches "$repo_dir/ponytail/hooks.json" "$scratch/config/hooks.json"
+check_matches "$repo_dir/ponytail/config.json" "$scratch/config/ponytail-config.json"
 
 if [[ -e "$scratch/config/hooks/ponytail-hook.sh" ]]; then
     perms="$(stat -c '%a' "$scratch/config/hooks/ponytail-hook.sh")"
@@ -61,3 +75,24 @@ grep -Fq -- '@openai/codex' "$repo_dir/Containerfile"
 grep -Fq -- 'local codex_cli_host_dir="$HOME/.codex"' "$repo_dir/polytoken-sandbox.sh"
 grep -Fq -- '-v "$codex_cli_host_dir:$codex_cli_dir"' "$repo_dir/polytoken-sandbox.sh"
 printf 'Codex container contract checks passed\n'
+
+# The shared image must ship the Compose CLI plugin (Fedora packages it
+# directly into /usr/libexec/docker/cli-plugins/) so `docker compose` —
+# including compose-file syntax validation — works inside pts.
+grep -Fq -- 'docker-compose' "$repo_dir/Containerfile"
+printf 'Compose plugin contract check passed\n'
+
+# Source greps prove intent, not runtime: when the shared image is present
+# locally, verify the CLIs actually execute inside it. Otherwise skip — CI
+# builds fresh images and exercises this there.
+if podman image exists localhost/polytoken-sandbox:latest 2>/dev/null; then
+    podman run --rm --entrypoint /bin/sh localhost/polytoken-sandbox:latest \
+        -c 'command -v codex >/dev/null && codex --version' ||
+        { echo 'FAIL: codex CLI not runnable in shared image' >&2; exit 1; }
+    podman run --rm --entrypoint /bin/sh localhost/polytoken-sandbox:latest \
+        -c 'docker compose version' ||
+        { echo 'FAIL: docker compose plugin not runnable in shared image' >&2; exit 1; }
+    printf 'Runtime Codex/Compose checks passed\n'
+else
+    printf 'SKIP: shared image not built locally; runtime Codex/Compose checks not exercised\n'
+fi

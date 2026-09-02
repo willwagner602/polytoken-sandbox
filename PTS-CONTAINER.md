@@ -48,6 +48,7 @@ By default, PTS exposes only these host paths:
 | `~/.local/bin/polytoken` | `/opt/polytoken-seed/polytoken` | Read-only, if present | Initial source for the shared Polytoken binary volume |
 | `~/.local/share/polytoken/auth/codex/` | `$HOME/.local/share/polytoken/auth/codex/` | Read/write | Shared Polytoken Codex auth and token refresh |
 | `~/.bashrc.d/polytoken-sandbox/angel/skills/` | `$HOME/skills/` | Read-only | Angel skills |
+| `~/.bashrc.d/polytoken-sandbox/skills/container-release/` | `$HOME/skills/container-release/` | Read-only | Standalone container-release skill |
 | `~/.bashrc.d/polytoken-sandbox/angel/subagents/` | `$HOME/subagents/` | Read-only | Angel subagents |
 | `~/.job_digest/secrets.json` | Same absolute path | Read-only, if present | Job-digest credentials/data |
 | `~/.codex/` | `$HOME/.codex/` | Read/write | OpenAI Codex CLI ChatGPT/subscription login and CLI state |
@@ -63,7 +64,7 @@ pts: trust and apply this file? [y/N]
 
 Confirmation is pinned to a sha256 of the file's content, not just "this project" — editing the file after approval (e.g. a benign version trusted once, then swapped for something malicious) requires re-approval rather than silently inheriting the old decision. The marker is stored in user-owned state under `$XDG_STATE_HOME` (or `~/.local/state`) with mode 600, not in the project tree. Declining, or running with no input available (non-interactively, or a read that times out after 30s), skips the file for that invocation.
 
-After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths and rejects host-root, system, runtime, and credential paths; for example:
+After reviewing and approving `.polytoken/volumes`, it contains one Podman `-v`-style mount specification per line. PTS requires absolute paths, requires the source to exist, resolves symlinks before checking, and rejects host-root, system, runtime, and credential paths — including home credential/config stores such as `.ssh`, `.aws`, `.gnupg`, `.config`, `.docker`, `.kube`, `.codex`, `.netrc`, and Polytoken's own host state; for example:
 
 ```text
 /home/will/work/docker_files:/home/will/work/docker_files
@@ -116,7 +117,7 @@ This permits one `polytoken auth provider login --provider codex` to serve both 
 
 ## Nested containers and Docker
 
-The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The current launcher does **not** start a Docker daemon, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. Docker-dependent workflows must provide and verify their own daemon endpoint; do not assume that `docker info` will succeed merely because the client is installed.
+The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The launcher starts a nested Docker daemon inside the sandbox before launching Polytoken — `dockerd` as the privileged outer-container root with `--storage-driver vfs --iptables=false --bridge=none` — exports `DOCKER_HOST=unix:///tmp/run-$(id -u)/docker.sock`, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, continuing with diagnostics if the daemon cannot start. The host Docker socket is never mounted. Because bridge networking is disabled, nested containers that need network access must use `--network=host`. Do not run `sudo`, `systemctl`, or `service` to look for a host daemon; there is none.
 
 The outer container uses host networking and privileged execution because nested-container workflows may require them. This is part of the trusted-project boundary, not a promise that the outer container isolates hostile code.
 
