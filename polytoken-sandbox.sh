@@ -668,6 +668,13 @@ exec /opt/polytoken-bin/polytoken "$@"
     }
     trap _pts_owner_signal HUP TERM INT
 
+    # keep-id:size= needs podman >= 5; older podman (e.g. Ubuntu 24.04's 4.x
+    # in CI) rejects the suboption outright. Fall back to plain keep-id there.
+    local pts_userns="--userns=keep-id:size=65536"
+    if (( $(podman --version 2>/dev/null | grep -oP '(?<=version )\d+' | head -1 || echo 0) < 5 )); then
+        pts_userns="--userns=keep-id"
+    fi
+
     container_id="$(podman create -it \
         --name "$container_name" \
         --label "pts.owner=$_pts_owner" \
@@ -680,7 +687,7 @@ exec /opt/polytoken-bin/polytoken "$@"
         --memory "$pts_memory" \
         --memory-swap "$pts_memory_swap" \
         --pids-limit "$pts_pids_limit" \
-        --userns=keep-id:size=65536 \
+        "$pts_userns" \
         --user 0 \
         --security-opt label=disable \
         --network=host \
