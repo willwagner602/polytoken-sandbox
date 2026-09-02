@@ -15,5 +15,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Recreate local checkout layout
+        run: |
+          mkdir -p "$(dirname "$GITHUB_WORKSPACE")/../.bashrc.d"
+          ln -s "$GITHUB_WORKSPACE" "$(dirname "$GITHUB_WORKSPACE")/../.bashrc.d/polytoken-sandbox"
+
       - name: Run test suite
         run: bash tests/run.sh
