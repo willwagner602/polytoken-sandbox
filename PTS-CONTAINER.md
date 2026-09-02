@@ -117,7 +117,7 @@ This permits one `polytoken auth provider login --provider codex` to serve both 
 
 ## Nested containers and Docker
 
-The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The current launcher does **not** start a Docker daemon, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. Docker-dependent workflows must provide and verify their own daemon endpoint; do not assume that `docker info` will succeed merely because the client is installed.
+The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The launcher starts a nested Docker daemon inside the sandbox before launching Polytoken — `dockerd` as the privileged outer-container root with `--storage-driver vfs --iptables=false --bridge=none` — exports `DOCKER_HOST=unix:///tmp/run-$(id -u)/docker.sock`, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, continuing with diagnostics if the daemon cannot start. The host Docker socket is never mounted. Because bridge networking is disabled, nested containers that need network access must use `--network=host`. Do not run `sudo`, `systemctl`, or `service` to look for a host daemon; there is none.
 
 The outer container uses host networking and privileged execution because nested-container workflows may require them. This is part of the trusted-project boundary, not a promise that the outer container isolates hostile code.
 

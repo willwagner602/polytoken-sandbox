@@ -81,7 +81,7 @@ The outer container remains privileged, host-networked, and device-enabled becau
 
 ### Historical troubleshooting notes
 
-The notes below record earlier development investigations. They are not the current runtime contract; see **Current Docker limitation** above and the launch flow for current behavior.
+The notes below record earlier development investigations. They are not the current runtime contract; see the launch flow above for current behavior.
 
 - The launcher copied `AGENTS.md` from a `$HOME`-derived path. In this environment, the repository was available at `/home/will/.bashrc.d/polytoken-sandbox`, while the shell environment also exposed `/var/home/will` paths. The source lookup therefore failed in some invocations.
 - Project state did not receive `AGENTS.md` when an image build failed, because synchronization happened after image building.
@@ -92,7 +92,7 @@ The notes below record earlier development investigations. They are not the curr
 
 ### Historical implementation notes
 
-The detailed Docker investigation and one-time verification are retained in earlier commits. They established the rootless image-build and nested-container constraints that explain the current privileged runtime, but they are not a description of a currently launched Docker daemon.
+The detailed Docker investigation and one-time verification are retained in earlier commits. They established the rootless image-build and nested-container constraints that explain the current privileged runtime. The launcher now starts a nested Docker daemon as described in the launch flow above; these historical notes are not that contract.
 
 The historical implementation notes below are preserved for context:
 

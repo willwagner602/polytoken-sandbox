@@ -437,7 +437,13 @@ pts() {
     local _k _v
     for _k in "${_key_names[@]}"; do
         _v="$(grep -oP "(?<=export ${_k}=\")[^\"]*" "$HOME/.bashrc" 2>/dev/null | tail -n1)"
-        [[ -n "$_v" ]] && export "$_k=$_v"
+        # Unset when absent: a key removed or rotated out of ~/.bashrc must not
+        # survive from an older shell environment into the container.
+        if [[ -n "$_v" ]]; then
+            export "$_k=$_v"
+        else
+            unset "$_k" 2>/dev/null || true
+        fi
     done
     unset _k _v _key_names
 
