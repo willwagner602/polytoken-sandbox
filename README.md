@@ -3,9 +3,13 @@
 Runs [polytoken](https://github.com) inside a rootless Podman container for
 project-oriented filesystem isolation. PTS is intended for trusted projects,
 not hostile code: nested-container support uses privileged execution, host
-networking, devices, selected credentials, and disabled SELinux labels. Only
-the invocation directory and explicitly approved additional mounts are exposed
-from the host filesystem; the rest of `$HOME` is not mounted by default.
+networking, devices, selected credentials, and disabled SELinux labels. The
+host filesystem exposure is: the invocation directory, plus the launcher's
+own default mounts (the Polytoken binary volume and its read-only host seed
+when present, Polytoken Codex auth read/write, the Angel skills/subagents
+directories read-only, and the optional job-digest secrets file), plus any
+`.polytoken/volumes` entries you explicitly approve. The rest of `$HOME` is
+not mounted by default.
 
 A repository's `.polytoken/volumes` (and `.polytoken/Containerfile`) is ignored
 until the operator interactively confirms it — approval is pinned to a sha256
@@ -40,27 +44,31 @@ projects you trust. Host `~/.codex` state is not mounted unless
    git clone https://github.com/willwagner602/polytoken-sandbox ~/.bashrc.d/polytoken-sandbox
    ```
 
-2. Symlink the shell function up one level so `~/.bashrc`'s
-   `for rc in ~/.bashrc.d/*` loop sources it automatically (anything that
-   isn't a shell script has to live in the subdirectory, or it gets
-   misinterpreted as one):
+2. Create a symlink one level up so `~/.bashrc`'s
+   `for rc in ~/.bashrc.d/*` loop sources the function automatically. Keep
+   non-shell files in the subdirectory; otherwise the loop may misinterpret
+   them as shell scripts:
 
    ```bash
    ln -sfn ~/.bashrc.d/polytoken-sandbox/polytoken-sandbox.sh ~/.bashrc.d/polytoken-sandbox.sh
    source ~/.bashrc.d/polytoken-sandbox.sh
    ```
 
-   The symlink keeps the sourced launcher in lockstep with this checkout —
-   there is no second copy to drift stale. Two consequences to know:
+   `ln -sfn` replaces an existing symlink or file, but if
+   `~/.bashrc.d/polytoken-sandbox.sh` already exists as a *directory*, `ln`
+   places the link inside it (or fails) — remove that directory first.
 
-   - The launcher you get follows whichever branch is checked out; switching
-     branches changes the launcher your next `pts` uses.
+   The symlink keeps the sourced launcher synchronized with this checkout;
+   it cannot drift from a second copy. Two consequences to know:
+
+   - The launcher you get follows whichever branch is checked out; your next
+     `pts` command uses the launcher from the currently checked-out branch.
    - Shells that are already running keep the previously sourced `pts`
      function in memory. After pulling or switching branches, run
      `source ~/.bashrc` (or open a new terminal) in the shell you launch
-     `pts` from. If a session seems to be missing new behavior, check what
-     that shell is actually running with `declare -f pts | grep -c GH_TOKEN`
-     (or a similar marker) before assuming the checkout is stale.
+     `pts` from. If a session lacks new behavior, verify the loaded function
+     with `declare -f pts | grep -c GH_TOKEN` (or another marker) before
+     diagnosing a stale checkout.
 
 3. Make sure `~/.local/bin/polytoken` exists. PTS seeds the shared
    `polytoken-sandbox-bin` volume from this binary on first use; later runs use
