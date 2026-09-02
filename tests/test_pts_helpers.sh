@@ -10,6 +10,11 @@ test_slug_hash() {
   [[ "$(_pts_name "$p" "$(_pts_project_hash "$p")")" != "$(_pts_name "$p" "$(_pts_project_hash "$p")")" ]]
 }
 
+# Static contract pins only: these greps assert the launcher's source keeps
+# the required wiring, but they cannot prove the executed behavior — that is
+# covered behaviorally by tests/test_pts_signal_cleanup.sh (fake podman
+# hangs on start, real trap timing, exact-ID stop/kill/rm) and the PTY
+# harness in tests/pts_pty_harness.py.
 test_no_unsafe_operations() {
   ! grep -Eq 'pkill|killall|podman (stop|kill|rm)[^|;&]*\*' "$root/polytoken-sandbox.sh"
   grep -Fq -- '--init' "$root/polytoken-sandbox.sh"

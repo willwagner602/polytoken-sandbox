@@ -167,6 +167,11 @@ done
                 for mount in data["Mounts"]
             )
 
+            # Detach causation: with start -ai, a clean client exit while
+            # the container is still running can only be the detach control
+            # sequence; the reconnect below (same fake pid answering PONG,
+            # container still running) then proves the workload survived the
+            # detach rather than dying with the client.
             first.write(b"\x10")
             time.sleep(0.1)
             first.write(b"\x11")
@@ -179,6 +184,9 @@ done
             second.wait_for(r"reconnecting to the existing managed container")
             second.write(b"ping\n")
             second.wait_for(rf"PONG pid={fake_pid}")
+            # Reconnect must have attached to the same live container, not
+            # replaced it.
+            assert inspect(container_id)["State"]["Status"] == "running"
             second.write(b"quit\n")
             second.wait_for(r"FAKE_QUIT")
             assert second.wait() == 0

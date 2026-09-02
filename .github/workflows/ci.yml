@@ -20,5 +20,10 @@ jobs:
           mkdir -p "$(dirname "$GITHUB_WORKSPACE")/../.bashrc.d"
           ln -s "$GITHUB_WORKSPACE" "$(dirname "$GITHUB_WORKSPACE")/../.bashrc.d/polytoken-sandbox"
 
+      - name: Ensure lifecycle test prerequisites
+        run: podman pull debian:12-slim
+
       - name: Run test suite
+        env:
+          PTS_STRICT_LIFECYCLE: '1'
         run: bash tests/run.sh
