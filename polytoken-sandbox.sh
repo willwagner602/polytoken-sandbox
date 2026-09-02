@@ -489,6 +489,30 @@ pts() {
     # manually.
     local seed_and_exec='
 set -e
+export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
+mkdir -p "$XDG_RUNTIME_DIR"
+export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
+# polytoken: the sandbox has no iptables modules, so use daemon networking
+# settings that work here; callers needing network access use --network=host.
+dockerd-rootless.sh --storage-driver vfs --iptables=false --bridge=none > /tmp/dockerd.log 2>&1 &
+daemon_pid=$!
+ready=0
+for _ in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+if [ "$ready" != 1 ]; then
+    echo "pts: Docker daemon did not become ready; continuing without it (docker commands will fail)." >&2
+    cat /tmp/dockerd.log >&2
+fi
+mkdir -p "$PWD/.polytoken/.docker/run"
+ln -sfn "$XDG_RUNTIME_DIR/docker.sock" "$PWD/.polytoken/.docker/run/docker.sock"
 if [ ! -x /opt/polytoken-bin/polytoken ]; then
     if [ -x /opt/polytoken-seed/polytoken ]; then
         cp /opt/polytoken-seed/polytoken /opt/polytoken-bin/polytoken
