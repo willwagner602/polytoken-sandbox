@@ -83,7 +83,7 @@ _pts_confirm_trust() {
     return 1
 }
 _pts_validate_volume() {
-    local spec="$1" host target opts resolved
+    local spec="$1" host target opts resolved o
     IFS=: read -r host target opts <<<"$spec"
     [[ "$host" == /* && "$target" == /* && "$host" != / ]] || return 1
     # Check the canonical source, not the lexical one: podman binds the
@@ -92,12 +92,24 @@ _pts_validate_volume() {
     # otherwise auto-create them).
     # polytoken: a TOCTOU window remains — a symlink can be swapped between
     # validation and `podman create`; mounting the validated resolved path
-    # instead of the approved line is the upgrade if that matters.
+    # instead of the approved line is the upgrade if that matters. The host
+    # side is a denylist, not an allowlist — a per-project allowlisted root
+    # directory is the upgrade if untrusted projects must be contained.
     resolved="$(realpath -e -- "$host" 2>/dev/null)" || return 1
     case "$resolved" in
-        /|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/etc|/etc/*|/root|/root/*|/home|/tmp|/var/lib|/var/lib/*|/var/run|/var/log|/var/log/*|/home/*/.ssh*|/home/*/.aws*|/home/*/.gnupg*|/home/*/.config*|/home/*/.docker*|/home/*/.kube*|/home/*/.codex*|/home/*/.netrc*|/home/*/.local/share/polytoken*)
+        /|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/etc|/etc/*|/root|/root/*|/home|/tmp|/var/lib|/var/lib/*|/var/run|/var/log|/var/log/*|/usr|/usr/*|/boot|/boot/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/srv|/srv/*|/home/*/.ssh*|/home/*/.aws*|/home/*/.gnupg*|/home/*/.config*|/home/*/.docker*|/home/*/.kube*|/home/*/.codex*|/home/*/.netrc*|/home/*/.local/share/polytoken*)
             return 1 ;;
     esac
+    # The container destination can shadow system paths inside a privileged,
+    # host-networked container; those are never legitimate for extra mounts.
+    case "$target" in
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*) return 1 ;;
+    esac
+    # Options: allow only known-safe bind options; anything else (idmaps,
+    # exotic propagation, future syntax) fails closed.
+    for o in ${opts//,/ }; do
+        case "$o" in ""|ro|rw|z|Z|rprivate|rslave|rshared|rbind) ;; *) return 1 ;; esac
+    done
     return 0
 }
 
@@ -153,6 +165,11 @@ _pts_resolve() {
         else printf 'pts: ambiguous target; choose one of:\n' >&2; printf '  %s\n' "${match[@]}" >&2; fi
         return 1
     fi
+    # Prefix matching is an operator convenience, not a safety property:
+    # announce the exact container every non-exact query resolved to, so a
+    # destructive op can never mutate an unintended target silently.
+    [[ -z "$query" || "$query" == "${match[0]}" ]] || \
+        echo "pts: '$query' resolved to managed container ${match[0]}" >&2
     printf '%s\n' "${match[0]}"
 }
 _pts_diag() {
@@ -177,13 +194,19 @@ _pts_stop_exact() {
     podman rm "$id" >/dev/null 2>&1 || { echo "pts: could not remove container $id; use pts ps/prune" >&2; return 1; }
 }
 _pts_attach_exact() {
-    local id="$1" line full name status exit phash project workdir memory swap pids init schema
+    local id="$1" line full name status exit phash project workdir memory swap pids init schema attach_status=0
     line="$(_pts_inspect "$id" 2>/dev/null)" || { echo "pts: cannot inspect managed container $id" >&2; return 1; }
     IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"
     [[ "$schema" == "$_pts_schema" ]] || { echo "pts: unsupported PTS launcher schema" >&2; return 1; }
     [[ "$status" == running ]] || { echo "pts: container $id is not running (state: $status)" >&2; return 1; }
     [[ -n "$workdir" && "$workdir" == /* ]] || { echo "pts: managed workdir is invalid" >&2; return 1; }
-    exec podman attach --sig-proxy=true "$full"
+    podman attach --sig-proxy=true "$full" || attach_status=$?
+    status="$(podman inspect --format '{{.State.Status}}' "$full" 2>/dev/null || true)"
+    if [[ "$status" != running ]]; then
+        _pts_diag "$full" "$project"
+        podman rm "$full" >/dev/null 2>&1 || echo "pts: cleanup failed for $full; use pts ps/prune" >&2
+    fi
+    return "$attach_status"
 }
 _pts_management() {
     local command="$1" query="${2:-}" project="" hash id line
@@ -235,7 +258,7 @@ pts() {
         fi
     fi
 
-    local base_image="localhost/polytoken-sandbox:latest"
+    local base_image="${PTS_BASE_IMAGE:-localhost/polytoken-sandbox:latest}"
 
     # Build the shared sandbox image (fedora-minimal + python3) on first
     # run. Cached afterwards; rebuild manually with:
@@ -273,8 +296,37 @@ pts() {
     local project_containerfile="$workdir/.polytoken/Containerfile"
     if [[ -f "$project_containerfile" ]] && _pts_confirm_trust "$project_containerfile" \
         "will be built and used as this project's sandbox image"; then
-        local containerfile_hash
-        containerfile_hash="$(sha256sum "$project_containerfile" | cut -c1-16)"
+        # Hash the Containerfile AND every project-authored file in the build
+        # context: `podman build` consumes the whole `.polytoken` directory,
+        # so approving only the recipe left context files unapproved and let
+        # a changed context silently reuse the old image tag. Runtime state
+        # (sessions, angel runs, docker socket, generated config, staged
+        # skills) is excluded — it changes every run and is launcher-
+        # generated, not project-authored.
+        local context_dir trust_root ctx_list containerfile_hash
+        context_dir="$(dirname "$project_containerfile")"
+        trust_root="${XDG_STATE_HOME:-$HOME/.local/state}/polytoken/pts/trust"
+        ctx_list="$trust_root/$(_pts_project_hash "$canonical_project")-context.listing"
+        if ! ( cd "$context_dir" && find . -type f \
+                ! -path './.local/*' ! -path './angel/*' ! -path './.docker/*' \
+                ! -path './skills/*' ! -path './subagents/*' ! -path './pts/*' \
+                ! -name Containerfile ! -name config.yaml ! -name hooks.json \
+                ! -name ponytail-config.json \
+                -print0 | sort -z | xargs -0r sha256sum; \
+              sha256sum ./Containerfile ) >"$ctx_list"; then
+            rm -f "$ctx_list"
+            return 1
+        fi
+        # Context gate reuses the trust-marker mechanism on the listing, so
+        # any post-approval context change forces re-confirmation and a
+        # fresh image tag.
+        if ! _pts_confirm_trust "$ctx_list" \
+            "defines the full build context of this project's sandbox image (context changed since approval)"; then
+            rm -f "$ctx_list"
+            return 1
+        fi
+        containerfile_hash="$(sha256sum "$ctx_list" | cut -c1-16)"
+        rm -f "$ctx_list"
         image="localhost/polytoken-sandbox-$(_pts_project_hash "$canonical_project")-$containerfile_hash:latest"
         if ! podman image exists "$image" 2>/dev/null; then
             echo "Building project sandbox image (one-time setup)..." >&2
@@ -333,7 +385,7 @@ pts() {
     # subordinate uid rather than your real one — it looked like it worked
     # (no error) but silently produced a directory owned by the wrong uid.
     # Cheap and idempotent, so it's safe to redo on every invocation.
-    local bin_volume="polytoken-sandbox-bin"
+    local bin_volume="${PTS_BIN_VOLUME:-polytoken-sandbox-bin}"
     podman run --rm -v "$bin_volume:/opt/polytoken-bin" \
         --entrypoint /bin/sh "$image" -c 'chown 0:0 /opt/polytoken-bin' >/dev/null
 
@@ -390,7 +442,7 @@ pts() {
     local secrets_file="$HOME/.job_digest/secrets.json"
     local -a volumes=(
         -v "$workdir:$workdir"
-        -v "polytoken-sandbox-bin:/opt/polytoken-bin"
+        -v "$bin_volume:/opt/polytoken-bin"
         -v "$codex_auth_host_dir:$codex_auth_dir"
         -v "$angel_skills_dir:$state_dir/skills:ro"
         -v "$_pts_root/skills/container-release:$state_dir/skills/container-release:ro"
@@ -399,7 +451,7 @@ pts() {
     if [[ "$share_codex_cli" == 1 ]]; then
         volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
     fi
-    local host_binary="$HOME/.local/bin/polytoken"
+    local host_binary="${PTS_POLYTOKEN_SEED:-$HOME/.local/bin/polytoken}"
     if [[ ! -f "$host_binary" ]]; then
         host_binary="$(command -v polytoken 2>/dev/null || true)"
     fi
@@ -616,6 +668,13 @@ exec /opt/polytoken-bin/polytoken "$@"
     }
     trap _pts_owner_signal HUP TERM INT
 
+    # keep-id:size= needs podman >= 5; older podman (e.g. Ubuntu 24.04's 4.x
+    # in CI) rejects the suboption outright. Fall back to plain keep-id there.
+    local pts_userns="--userns=keep-id:size=65536"
+    if (( $(podman --version 2>/dev/null | grep -oP '(?<=version )\d+' | head -1 || echo 0) < 5 )); then
+        pts_userns="--userns=keep-id"
+    fi
+
     container_id="$(podman create -it \
         --name "$container_name" \
         --label "pts.owner=$_pts_owner" \
@@ -628,7 +687,7 @@ exec /opt/polytoken-bin/polytoken "$@"
         --memory "$pts_memory" \
         --memory-swap "$pts_memory_swap" \
         --pids-limit "$pts_pids_limit" \
-        --userns=keep-id:size=65536 \
+        "$pts_userns" \
         --user 0 \
         --security-opt label=disable \
         --network=host \
@@ -647,12 +706,13 @@ exec /opt/polytoken-bin/polytoken "$@"
         -e PTS_UID="$(id -u)" \
         -e PTS_GID="$(id -g)" \
         "${git_env[@]}" \
-        --entrypoint /bin/sh "$image" -c "$seed_and_exec" sh "${polytoken_args[@]}")" || return 1
+        --entrypoint /bin/sh "$image" -c "$seed_and_exec" sh "${polytoken_args[@]}")" || { trap - HUP TERM INT; return 1; }
     container_id="${container_id##*$'\n'}"
     printf 'pts: container=%s id=%.12s project=%s memory=%s memory+swap=%s pids=%s\n' \
         "$container_name" "$container_id" "$canonical_project" "$pts_memory" "$pts_memory_swap" "$pts_pids_limit" >&2
     if ! _pts_inspect "$container_id" >/dev/null 2>&1; then
         podman rm "$container_id" >/dev/null 2>&1 || true
+        trap - HUP TERM INT
         return 1
     fi
     # Background + `wait`, never a foreground call: bash defers trapped

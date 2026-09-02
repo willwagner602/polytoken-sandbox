@@ -10,11 +10,20 @@ test_slug_hash() {
   [[ "$(_pts_name "$p" "$(_pts_project_hash "$p")")" != "$(_pts_name "$p" "$(_pts_project_hash "$p")")" ]]
 }
 
+# Static contract pins only: these greps assert the launcher's source keeps
+# the required wiring, but they cannot prove the executed behavior — that is
+# covered behaviorally by tests/test_pts_signal_cleanup.sh (fake podman
+# hangs on start, real trap timing, exact-ID stop/kill/rm) and the PTY
+# harness in tests/pts_pty_harness.py.
 test_no_unsafe_operations() {
   ! grep -Eq 'pkill|killall|podman (stop|kill|rm)[^|;&]*\*' "$root/polytoken-sandbox.sh"
   grep -Fq -- '--init' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'podman create -it' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'podman start -ai --sig-proxy=true' "$root/polytoken-sandbox.sh"
+  grep -Fq -- 'podman attach --sig-proxy=true "$full"' "$root/polytoken-sandbox.sh"
+  ! grep -Fq -- 'exec podman attach' "$root/polytoken-sandbox.sh"
+  grep -Fq -- "printf 'pts: container=%s id=%.12s" "$root/polytoken-sandbox.sh"
+  ! grep -Fq -- "pids=%s\\n' \\\\" "$root/polytoken-sandbox.sh"
   ! grep -Fq -- 'podman run --rm -it \\' "$root/polytoken-sandbox.sh"
   ! grep -Eq -- '-e GH_TOKEN=' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'local -x GH_TOKEN="$gh_token"' "$root/polytoken-sandbox.sh"
