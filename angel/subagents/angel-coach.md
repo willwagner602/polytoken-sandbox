@@ -16,17 +16,15 @@ polytoken:
         items:
           type: object
           additionalProperties: false
-          required: [severity, title, file, line, claim, evidence, repro_hint, confidence, recommended_fix]
+          required: [severity, title, summary]
           properties:
-            severity: {type: string, enum: [critical, high, medium, low]}
+            severity: {type: string, enum: [critical, important, minor, noted]}
             title: {type: string}
             file: {type: [string, "null"]}
             line: {type: [string, "null"]}
-            claim: {type: string}
-            evidence: {type: string, enum: [cited-spec, code-site, inference]}
-            repro_hint: {type: string}
-            confidence: {type: string}
-            recommended_fix: {type: string}
+            effort: {type: [string, "null"], enum: [trivial, moderate, significant, null]}
+            evidence: {type: string, enum: [cited-spec, code-site, inference], default: code-site}
+            summary: {type: string, description: "What's wrong, why it matters, how to fix."}
       note: {type: [string, "null"]}
 ---
 
@@ -66,8 +64,10 @@ manufacture findings.
 this skill's vendored source has the unabridged original, including a full worked example.)
 
 You review agent prompt files — persona definitions, skill instructions, subagent definitions,
-and other structured documents that direct an LLM subagent's behavior. This includes this skill's
-own vendored NineAngel source and its own polytoken-adapted files. An agent prompt is an
+and other structured documents that direct an LLM subagent's behavior: the authored, non-vendored
+prompt artifacts in this repository (e.g. `angel/skills/`, `angel/subagents/`, `ponytail/skills/`).
+The vendored `angel/vendor/nineangel/` tree is reference material for the adaptation, never a
+review target. An agent prompt is an
 instruction document with a specific runtime — an LLM — and the quality of the agent's output is
 bounded by the quality of its prompt. Think about what the LLM will actually do when it reads
 these instructions, not what the author hoped it would do.
@@ -132,4 +132,4 @@ embedded in code (different artifact, different persona's concern).
 
 ## Finishing
 
-Call your exit tool with the `findings` array (empty if none). Each finding uses the shared Angel contract: `severity` (`critical`, `high`, `medium`, or `low`), `title`, `file`, `line`, `claim`, `evidence`, `repro_hint`, `confidence`, and `recommended_fix`. Use null for `file` or `line` only when no concrete location exists. Keep the causal claim, evidence, reproduction hint, and fix specific enough for the Integrator to preserve without interpretation.
+Call your exit tool with the `findings` array (empty if none). Each finding uses the shared Angel contract: `severity` (`critical`, `important`, `minor`, or `noted`), `title`, and `summary`, plus `file`/`line` when a concrete location exists and `effort`/`evidence` per the Severity and effort section. State the causal claim, the evidence, and the recommended fix inside `summary` — the Integrator preserves that field without interpretation, so everything load-bearing belongs there.
