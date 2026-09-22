@@ -7,8 +7,9 @@
 # ~/.job_digest/secrets.json file (read-only), and a persistent named volume
 # holding the polytoken binary — not the rest of $HOME. Polytoken's own
 # config/cache/auth/session state lives in a `.polytoken/` dir under the
-# invocation directory, so it persists per-project across runs. Shares the
-# host network so LLM API calls work normally.
+# invocation directory, so it persists per-project across runs. Uses Podman's
+# private rootless network so nested runtimes own the network namespace they
+# must mount sysfs against; outbound provider traffic still works normally.
 #
 # The polytoken binary lives in the `polytoken-sandbox-bin` named volume,
 # shared across every project (like the image) rather than mounted from the
@@ -100,8 +101,8 @@ _pts_validate_volume() {
         /|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/etc|/etc/*|/root|/root/*|/home|/tmp|/var/lib|/var/lib/*|/var/run|/var/log|/var/log/*|/usr|/usr/*|/boot|/boot/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/srv|/srv/*|/home/*/.ssh*|/home/*/.aws*|/home/*/.gnupg*|/home/*/.config*|/home/*/.docker*|/home/*/.kube*|/home/*/.codex*|/home/*/.netrc*|/home/*/.local/share/polytoken*)
             return 1 ;;
     esac
-    # The container destination can shadow system paths inside a privileged,
-    # host-networked container; those are never legitimate for extra mounts.
+    # The container destination can shadow system paths inside this privileged
+    # container; those are never legitimate for extra mounts.
     case "$target" in
         /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*|/boot|/boot/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*) return 1 ;;
     esac
@@ -637,12 +638,11 @@ set -e
 # rootless dockerd cannot create its UID map reliably in this environment.
 export XDG_RUNTIME_DIR=/tmp/run-0
 export DOCKER_HOST=unix:///tmp/run-0/docker.sock
-export DOCKER_CONFIG=/tmp/docker-cli-config
+export DOCKER_CONFIG="$HOME/.docker"
 export DOCKER_CONTEXT=
 export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG"
-mkdir -p "$PWD/.polytoken/.docker/run"
-ln -sfn "$XDG_RUNTIME_DIR/docker.sock" "$PWD/.polytoken/.docker/run/docker.sock"
+mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG/run"
+ln -sfn "$XDG_RUNTIME_DIR/docker.sock" "$DOCKER_CONFIG/run/docker.sock"
 if [ ! -x /opt/polytoken-bin/polytoken ]; then
     if [ -x /opt/polytoken-seed/polytoken ]; then
         cp /opt/polytoken-seed/polytoken /opt/polytoken-bin/polytoken
@@ -672,6 +672,9 @@ else
     chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" "$XDG_RUNTIME_DIR/docker.sock"
     chmod 660 "$XDG_RUNTIME_DIR/docker.sock"
 fi
+# Docker CLI plugins (notably buildx) write below DOCKER_CONFIG after
+# Polytoken drops privileges; hand the persistent project directory over once.
+chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" "$DOCKER_CONFIG"
 
 case "$1" in
     auth|update) ;;
@@ -733,7 +736,6 @@ exec /opt/polytoken-bin/polytoken "$@"
         "$pts_userns" \
         --user 0 \
         --security-opt label=disable \
-        --network=host \
         --device /dev/fuse \
         --device /dev/net/tun \
         "${volumes[@]}" \

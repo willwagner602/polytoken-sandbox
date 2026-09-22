@@ -38,7 +38,7 @@ Running bare `pts` from a project directory defaults to `polytoken continue` (wi
 9. Refresh provider credentials from the host shell configuration and pass them as environment variables.
 10. Launch Polytoken through the image's nested-container-capable runtime, opportunistically starting Codex's device-code login first if it isn't already authenticated. The launcher starts a nested Docker daemon before launching Polytoken and exports `DOCKER_HOST` (see "Docker support"); if the daemon cannot start, it continues without it and Docker commands fail with a diagnostic.
 
-The container uses host networking so model APIs and deliberately nested container workloads can reach the network. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, FUSE/TUN devices, and host networking. These are trusted-workflow prerequisites for nested-container tooling, not a hostile-code security boundary.
+The container uses Podman's default private rootless network (pasta on current Podman, slirp4netns on older supported versions), which preserves outbound access for model APIs while giving nested runtimes a network namespace owned by the PTS user namespace. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, and FUSE/TUN devices. These are trusted-workflow prerequisites for nested-container tooling, not a hostile-code security boundary.
 
 ## Filesystem and state model
 
@@ -50,7 +50,7 @@ The project state directory may contain sensitive session history and device-aut
 
 The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows. The launcher starts a nested `dockerd` inside each PTS container, sets `DOCKER_HOST`, and creates a compatibility socket (see "Docker support"); it never mounts the host Docker socket. If the daemon cannot start, PTS continues without it and Docker commands fail with a diagnostic.
 
-Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS: the container does not run systemd and does not expose the host socket. The outer container remains privileged and host-networked because those are retained prerequisites for trusted nested-container workflows, not because PTS is a hostile-code boundary.
+Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS: the container does not run systemd and does not expose the host socket. The outer container remains privileged but uses Podman's private rootless network: sharing the physical host network prevents nested `runc` from mounting sysfs or entering that network namespace under `--userns=keep-id`. This remains a trusted-workflow runtime, not a hostile-code boundary.
 
 ## Browser and PDF support
 
@@ -75,9 +75,9 @@ The sandbox is isolation by filesystem exposure, not a hostile multi-tenant secu
 
 The launcher starts a nested Docker daemon inside each PTS container before launching Polytoken. It uses the privileged outer container as root, with `vfs` storage and disabled iptables/bridge networking because the sandbox kernel does not provide the modules required by Docker's default bridge. Docker-aware project commands should use host networking when they start nested containers.
 
-The launcher exports `DOCKER_HOST=unix:///tmp/run-0/docker.sock`, clears Docker context/config overrides, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, but retains the existing diagnostic fallback if the daemon cannot start. Do not use `sudo`, `systemctl`, or `service` inside PTS; the container does not run systemd and does not expose the host Docker socket.
+The launcher exports `DOCKER_HOST=unix:///tmp/run-0/docker.sock`, uses the writable project path `$HOME/.docker` as `DOCKER_CONFIG`, clears Docker context overrides, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, but retains the existing diagnostic fallback if the daemon cannot start. Do not use `sudo`, `systemctl`, or `service` inside PTS; the container does not run systemd and does not expose the host Docker socket.
 
-The outer container remains privileged, host-networked, and device-enabled because those are required for nested container workflows. They are not a hostile-code isolation guarantee.
+The outer container remains privileged and device-enabled but uses Podman's private rootless network. Nested Docker commands use `--network=host` to join that PTS-owned namespace, not the physical host network. These choices enable nested container workflows; they are not a hostile-code isolation guarantee.
 
 ### Historical troubleshooting notes
 
@@ -89,6 +89,7 @@ The notes below record earlier development investigations. They are not the curr
 - Nested `dockerd-rootless.sh` failed with `newuidmap ... Operation not permitted` when started inside the privileged outer container. `--userns=keep-id:size=65536` did not solve that nested UID-map failure.
 - Agents sometimes attempted `sudo`, `systemctl start docker`, or `service docker`. Those commands are wrong here: the sandbox does not run systemd as PID 1, does not provide a host Docker service, and does not mount the host Docker socket.
 - Some Docker-aware tooling selected the project-local path `.polytoken/.docker/run/docker.sock` instead of the launcher’s daemon socket.
+- Combining rootless `--userns=keep-id` with outer `--network=host` let `dockerd` start but prevented nested `runc` from mounting sysfs or entering the physical host network namespace. Keeping the outer PTS container on Podman's private rootless network fixes namespace ownership; nested `--network=host` then joins that private namespace.
 
 ### Historical implementation notes
 
@@ -115,7 +116,7 @@ The historical implementation notes below are preserved for context:
 
    ```text
    DOCKER_HOST=unix:///tmp/run-0/docker.sock
-   DOCKER_CONFIG=/tmp/docker-cli-config
+   DOCKER_CONFIG=$HOME/.docker
    DOCKER_CONTEXT=
    ```
 

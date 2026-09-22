@@ -26,7 +26,7 @@ PTS launches the image with:
 
 - rootless Podman and `--userns=keep-id`, so files created in the project normally retain the invoking host user's ownership
 - SELinux labeling disabled for the bind mounts (`--security-opt label=disable`)
-- host networking (`--network=host`), allowing provider API calls without a container-private network
+- Podman's default private rootless network (pasta on current Podman, slirp4netns on older supported versions), which preserves outbound provider access while giving nested runtimes a network namespace owned by the PTS user namespace
 - the current project directory as the working directory
 - `HOME` redirected to `<project>/.polytoken`
 - a unique PTS-managed name and ownership/project labels, so every container is attributable without broad process matching
@@ -117,9 +117,9 @@ This permits one `polytoken auth provider login --provider codex` to serve both 
 
 ## Nested containers and Docker
 
-The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The launcher starts a nested Docker daemon inside the sandbox before launching Polytoken — `dockerd` as the privileged outer-container root with `--storage-driver vfs --iptables=false --bridge=none` — exports `DOCKER_HOST=unix:///tmp/run-$(id -u)/docker.sock`, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, continuing with diagnostics if the daemon cannot start. The host Docker socket is never mounted. Because bridge networking is disabled, nested containers that need network access must use `--network=host`. Do not run `sudo`, `systemctl`, or `service` to look for a host daemon; there is none.
+The PTS image includes Docker and Podman clients plus the privileges and device mappings needed by projects that deliberately run nested containers. The launcher starts a nested Docker daemon inside the sandbox before launching Polytoken — `dockerd` as the privileged outer-container root with `--storage-driver vfs --iptables=false --bridge=none` — exports `DOCKER_HOST=unix:///tmp/run-0/docker.sock`, uses the writable project path `$HOME/.docker` as `DOCKER_CONFIG`, and creates `.polytoken/.docker/run/docker.sock` as a compatibility symlink. It waits for `docker info` to succeed before launching Polytoken, continuing with diagnostics if the daemon cannot start. The host Docker socket is never mounted. Because bridge networking is disabled, nested containers that need network access must use `--network=host`, which joins PTS's private rootless network namespace rather than the physical host network. Do not run `sudo`, `systemctl`, or `service` to look for a host daemon; there is none.
 
-The outer container uses host networking and privileged execution because nested-container workflows may require them. This is part of the trusted-project boundary, not a promise that the outer container isolates hostile code.
+The outer container uses Podman's private rootless network rather than the physical host network. This is required for nested Docker under rootless `--userns=keep-id`: sharing the physical host network leaves nested `runc` unable to mount sysfs or enter that network namespace. Nested Docker still uses `--network=host`; there, "host" means the PTS-owned private namespace, which retains outbound connectivity. Privileged execution remains part of the trusted-project boundary, not a promise that the outer container isolates hostile code.
 
 ## Optional project extensions
 
@@ -154,6 +154,6 @@ allocations identify a cause.
 
 ## Security and operational boundaries
 
-PTS is isolation for convenience and reproducibility, not a hostile-code security boundary. The container has host networking, receives selected credentials, may receive user-approved extra mounts, and uses the privileges required by the nested-container setup when that setup is enabled. Treat prompts, project Containerfiles, `.polytoken/volumes`, and agent actions as code with access to every path explicitly mounted into the container.
+PTS is isolation for convenience and reproducibility, not a hostile-code security boundary. The container has outbound network access through Podman's private rootless network, receives selected credentials, may receive user-approved extra mounts, and uses the privileges required by the nested-container setup when that setup is enabled. Treat prompts, project Containerfiles, `.polytoken/volumes`, and agent actions as code with access to every path explicitly mounted into the container.
 
 The default policy is intentionally narrow: mount the current project, the Polytoken executable, selected credential material, and nothing else from the host home directory.

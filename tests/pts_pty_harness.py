@@ -161,7 +161,10 @@ done
             assert host["MemorySwap"] == 512 * 1024 * 1024
             assert host["PidsLimit"] == 128
             assert host["Init"] is True
-            assert host["NetworkMode"] == "host"
+            # Outer PTS must own a private network namespace: sharing the
+            # physical host network prevents nested runc from mounting sysfs.
+            # Podman chooses pasta or slirp4netns according to its version.
+            assert host["NetworkMode"] != "host"
             assert any(
                 mount["Destination"] == "/opt/polytoken-bin" and mount["Name"] == volume
                 for mount in data["Mounts"]
