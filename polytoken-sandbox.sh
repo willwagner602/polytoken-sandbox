@@ -36,7 +36,7 @@
 # Resolve bundled files from this script, not HOME: pts deliberately redirects
 # HOME inside the child container and may also be invoked from a resumed shell
 # where HOME already points at a project state directory.
-_pts_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+_pts_root="$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")"
 
 # Copies Ponytail's hook script, hook wiring, and default-mode config into
 # the per-project polytoken config dir, plus this repo's own root AGENTS.md
@@ -138,6 +138,39 @@ _pts_github_token() {
         gh auth token 2>/dev/null
     fi
 }
+# Value an exported shell variable $1 would have after reading file $2 —
+# parsed, never sourced: a bashrc may assume interactivity (prompts, exec,
+# early return). Accepts the common assignment forms — export K="v",
+# export K='v', export K=v, and K=v with a later bare `export K` (alone or
+# among other names) — with the last assignment winning, like the shell.
+# polytoken: not a full shell parser — values containing whitespace or '#',
+# conditional/expanded assignments, and multi-assignment export lines are
+# out of scope; the upgrade is an explicit non-interactive env file that
+# pts sources directly if a project ever needs those.
+_pts_bashrc_value() {
+    local key="$1" file="$2" line word is_export value="" exported=0
+    local -a words=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        is_export=0
+        if [[ "$line" =~ ^[[:space:]]*export([[:space:]]|$) ]]; then
+            is_export=1
+            line="${line#*export}"
+        fi
+        read -r -a words <<<"$line"
+        for word in "${words[@]}"; do
+            if [[ "$word" == "$key" ]]; then
+                ((is_export)) && exported=1
+            elif [[ "$word" == "$key="* ]]; then
+                ((is_export)) && exported=1
+                value="${word#*=}"
+                value="${value#\"}"; value="${value%\"}"
+                value="${value#\'}"; value="${value%\'}"
+            fi
+        done
+    done <"$file"
+    if ((exported)); then printf '%s\n' "$value"; fi
+}
 _pts_ids() { podman ps -a --filter "label=pts.owner=$_pts_owner" --format '{{.ID}}'; }
 _pts_running_for_project() {
     local project_hash="$1" id line full name status exit phash project workdir memory swap pids init schema
@@ -208,6 +241,28 @@ _pts_attach_exact() {
     fi
     return "$attach_status"
 }
+# Stale project sandbox images: `pts` tags each approved project image
+# localhost/polytoken-sandbox-<project-hash>-<context-hash>:latest, so
+# iterating on a trusted Containerfile accumulates one image per context.
+# Prints the ones safe to remove: never an image a container still uses
+# (ancestor filter), and never each project's newest remaining tag (the
+# current context, since `podman images` lists newest first). `pts prune`
+# removes exactly this list, after confirmation.
+_pts_stale_images() {
+    local image key
+    local -A kept=()
+    while IFS= read -r image; do
+        [[ "$image" =~ ^localhost/polytoken-sandbox-[0-9a-f]{16}-[0-9a-f]{16}: ]] || continue
+        key="${image%%:*}"
+        key="${key#localhost/polytoken-sandbox-}"
+        key="${key%-*}"
+        if [[ -n "$(podman ps -aq --filter "ancestor=$image" 2>/dev/null)" || -z "${kept[$key]:-}" ]]; then
+            kept["$key"]=1
+        else
+            printf '%s\n' "$image"
+        fi
+    done < <(podman images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+}
 _pts_management() {
     local command="$1" query="${2:-}" project="" hash id line
     if [[ "$command" != ps && "$command" != prune ]]; then
@@ -216,7 +271,18 @@ _pts_management() {
     case "$command" in
         ps) printf '%-14s %-28s %-12s %s\n' ID NAME STATUS PROJECT; while IFS= read -r id; do line="$(_pts_inspect "$id" 2>/dev/null || true)"; [[ -n "$line" ]] || continue; IFS=$'\t' read -r full name status exit phash project workdir memory swap pids init schema <<<"$line"; printf '%-14.12s %-28.28s %-12s %s\n' "$full" "${name#/}" "$status" "$project"; done < <(_pts_ids); return 0 ;;
         attach|stop|stats|diagnose) id="$(_pts_resolve "$query" "$([[ -n "$query" ]] && echo || echo "$(_pts_project_hash "$project")")")" || return 1 ;;
-        prune) local answer; mapfile -t ids < <(_pts_ids); for id in "${ids[@]}"; do [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && printf '%s\n' "$id"; done; read -r -p 'pts: remove stopped managed containers? [y/N] ' answer || return 1; [[ "$answer" =~ ^[Yy]$ ]] || return 0; for id in "${ids[@]}"; do [[ -n "$id" ]] && [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && podman rm "$id"; done; return 0 ;;
+        prune) local answer; mapfile -t ids < <(_pts_ids); for id in "${ids[@]}"; do [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && printf '%s\n' "$id"; done; read -r -p 'pts: remove stopped managed containers? [y/N] ' answer || return 1; [[ "$answer" =~ ^[Yy]$ ]] || return 0; for id in "${ids[@]}"; do [[ -n "$id" ]] && [[ "$(_pts_inspect "$id" 2>/dev/null)" == *$'\texited\t'* ]] && podman rm "$id"; done
+        local -a stale_images=()
+        mapfile -t stale_images < <(_pts_stale_images)
+        if ((${#stale_images[@]} > 0)); then
+            printf 'pts: %d stale project sandbox image(s) no longer used by any container\n' "${#stale_images[@]}" >&2
+            local image_answer stale_image
+            read -r -p 'pts: remove them? [y/N] ' image_answer || return 1
+            if [[ "$image_answer" =~ ^[Yy]$ ]]; then
+                for stale_image in "${stale_images[@]}"; do podman rmi "$stale_image"; done
+            fi
+        fi
+        return 0 ;;
         *) return 2 ;;
     esac
     case "$command" in
@@ -488,7 +554,7 @@ pts() {
     local -a _key_names=(OPENAI_API_KEY ANTHROPIC_API_KEY ZAI_API_KEY NEURALWATT_API_KEY OPENCODE_API_KEY BRAVE_API_KEY TAVILY_API_KEY EXA_API_KEY KAGI_API_KEY)
     local _k _v
     for _k in "${_key_names[@]}"; do
-        _v="$(grep -oP "(?<=export ${_k}=\")[^\"]*" "$HOME/.bashrc" 2>/dev/null | tail -n1)"
+        _v="$(_pts_bashrc_value "$_k" "$HOME/.bashrc")"
         # Unset when absent: a key removed or rotated out of ~/.bashrc must not
         # survive from an older shell environment into the container.
         if [[ -n "$_v" ]]; then
@@ -566,28 +632,15 @@ pts() {
     # manually.
     local seed_and_exec='
 set -e
-export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
-mkdir -p "$XDG_RUNTIME_DIR"
-export DOCKER_HOST="unix://$XDG_RUNTIME_DIR/docker.sock"
-# polytoken: the sandbox has no iptables modules, so use daemon networking
-# settings that work here; callers needing network access use --network=host.
-dockerd-rootless.sh --storage-driver vfs --iptables=false --bridge=none > /tmp/dockerd.log 2>&1 &
-daemon_pid=$!
-ready=0
-for _ in $(seq 1 30); do
-    if docker info >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-    if ! kill -0 "$daemon_pid" 2>/dev/null; then
-        break
-    fi
-    sleep 1
-done
-if [ "$ready" != 1 ]; then
-    echo "pts: Docker daemon did not become ready; continuing without it (docker commands will fail)." >&2
-    cat /tmp/dockerd.log >&2
-fi
+# Start the nested daemon before dropping Polytoken to the invoking UID. The
+# outer PTS container is privileged specifically for this root-owned daemon;
+# rootless dockerd cannot create its UID map reliably in this environment.
+export XDG_RUNTIME_DIR=/tmp/run-0
+export DOCKER_HOST=unix:///tmp/run-0/docker.sock
+export DOCKER_CONFIG=/tmp/docker-cli-config
+export DOCKER_CONTEXT=
+export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG"
 mkdir -p "$PWD/.polytoken/.docker/run"
 ln -sfn "$XDG_RUNTIME_DIR/docker.sock" "$PWD/.polytoken/.docker/run/docker.sock"
 if [ ! -x /opt/polytoken-bin/polytoken ]; then
@@ -599,16 +652,6 @@ if [ ! -x /opt/polytoken-bin/polytoken ]; then
         exit 1
     fi
 fi
-
-# Start the nested daemon before dropping Polytoken to the invoking UID. The
-# outer PTS container is privileged specifically for this root-owned daemon;
-# rootless dockerd cannot create its UID map reliably in this environment.
-export XDG_RUNTIME_DIR=/tmp/run-0
-export DOCKER_HOST=unix:///tmp/run-0/docker.sock
-export DOCKER_CONFIG=/tmp/docker-cli-config
-export DOCKER_CONTEXT=
-export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG"
 dockerd --host=unix:///tmp/run-0/docker.sock --storage-driver=vfs --iptables=false --bridge=none > /tmp/dockerd.log 2>&1 &
 daemon_pid=$!
 ready=0

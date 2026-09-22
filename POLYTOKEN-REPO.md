@@ -36,7 +36,7 @@ Running bare `pts` from a project directory defaults to `polytoken continue` (wi
 7. Mount Polytoken's global Codex provider auth directory read/write, the host `~/.codex/` directory read/write for the OpenAI Codex CLI (separate from Polytoken's own Codex provider auth store), and the Angel skills/subagents read-only.
 8. Optionally mount `~/.job_digest/secrets.json` read-only. A project-local `.polytoken/Containerfile` or `.polytoken/volumes` each require one-time interactive confirmation — pinned to a sha256 of that file's content, so editing it after approval re-prompts — before being built or mounted; declined or unconfirmed files are skipped for that run.
 9. Refresh provider credentials from the host shell configuration and pass them as environment variables.
-10. Launch Polytoken through the image's nested-container-capable runtime, opportunistically starting Codex's device-code login first if it isn't already authenticated. The current launcher does not start a Docker daemon or set `DOCKER_HOST`; Docker-dependent workflows must provide and verify their own daemon endpoint.
+10. Launch Polytoken through the image's nested-container-capable runtime, opportunistically starting Codex's device-code login first if it isn't already authenticated. The launcher starts a nested Docker daemon before launching Polytoken and exports `DOCKER_HOST` (see "Docker support"); if the daemon cannot start, it continues without it and Docker commands fail with a diagnostic.
 
 The container uses host networking so model APIs and deliberately nested container workloads can reach the network. The outer Podman invocation uses `--privileged`, `--userns=keep-id`, SELinux label disabling, FUSE/TUN devices, and host networking. These are trusted-workflow prerequisites for nested-container tooling, not a hostile-code security boundary.
 
@@ -48,7 +48,7 @@ The project state directory may contain sensitive session history and device-aut
 
 ## Nested Docker
 
-The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows. The current launcher does not start `dockerd`, set `DOCKER_HOST`, create a Docker socket, or mount the host Docker socket. Docker-dependent workflows must provide and verify their own daemon endpoint.
+The image includes Docker and Podman clients plus the runtime prerequisites for deliberately nested container workflows. The launcher starts a nested `dockerd` inside each PTS container, sets `DOCKER_HOST`, and creates a compatibility socket (see "Docker support"); it never mounts the host Docker socket. If the daemon cannot start, PTS continues without it and Docker commands fail with a diagnostic.
 
 Do not use `sudo`, `systemctl`, or `service` to look for a host daemon from inside PTS: the container does not run systemd and does not expose the host socket. The outer container remains privileged and host-networked because those are retained prerequisites for trusted nested-container workflows, not because PTS is a hostile-code boundary.
 
