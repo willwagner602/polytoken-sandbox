@@ -3,6 +3,63 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$root/polytoken-sandbox.sh"
 
+test_bashrc_value_forms() {
+  local rc
+  rc="$(mktemp)"
+  {
+    echo 'export OPENAI_API_KEY="double-quoted"'
+    echo "export ANTHROPIC_API_KEY='single-quoted'"
+    echo 'export ZAI_API_KEY=unquoted'
+    echo 'NEURALWATT_API_KEY=two-step'
+    echo 'export NEURALWATT_API_KEY'
+    echo '# export EXA_API_KEY="commented-out"'
+    echo 'export KAGI_API_KEY="old"'
+    echo 'export KAGI_API_KEY="new"'
+    echo 'export TAVILY_API_KEY="trail" # trailing comment'
+    echo 'export OPENAI_API_KEY_EXTRA=no-prefix-match'
+    echo 'BRAVE_API_KEY=never-exported'
+  } >"$rc"
+  [[ "$(_pts_bashrc_value OPENAI_API_KEY "$rc")" == double-quoted ]]
+  [[ "$(_pts_bashrc_value ANTHROPIC_API_KEY "$rc")" == single-quoted ]]
+  [[ "$(_pts_bashrc_value ZAI_API_KEY "$rc")" == unquoted ]]
+  [[ "$(_pts_bashrc_value NEURALWATT_API_KEY "$rc")" == two-step ]]
+  [[ -z "$(_pts_bashrc_value EXA_API_KEY "$rc")" ]]
+  [[ "$(_pts_bashrc_value KAGI_API_KEY "$rc")" == new ]]
+  [[ "$(_pts_bashrc_value TAVILY_API_KEY "$rc")" == trail ]]
+  # A query that is only a prefix of a defined name must not match it.
+  [[ -z "$(_pts_bashrc_value OPENAI_API_KE "$rc")" ]]
+  # Assigned but never exported: invisible to child processes, so absent.
+  [[ -z "$(_pts_bashrc_value BRAVE_API_KEY "$rc")" ]]
+  rm -f "$rc"
+}
+
+test_stale_image_listing() {
+  local out
+  podman() {
+    case "$1" in
+      images) printf '%s\n' \
+        'localhost/polytoken-sandbox-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbb1:latest' \
+        'localhost/polytoken-sandbox-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbb2:latest' \
+        'localhost/polytoken-sandbox-aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbb3:latest' \
+        'localhost/polytoken-sandbox-cccccccccccccccc-dddddddddddddd1:latest' \
+        'localhost/polytoken-sandbox-short-eh:latest' \
+        'localhost/unrelated:latest' ;;
+      ps) case "$*" in *bbbbbbbbbbbbbbb1*|*ddddddddddddddd1*) printf 'using\n' ;; esac ;;
+    esac
+    return 0
+  }
+  out="$(_pts_stale_images)"
+  # Newest-first listing: group a's tag 1 is kept (newest), tag 2 and 3 are
+  # unreferenced and stale; group c's only tag is referenced; non-conforming
+  # names never match.
+  printf '%s\n' "$out" | grep -Fq -- 'aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbb2:latest'
+  printf '%s\n' "$out" | grep -Fq -- 'aaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbb3:latest'
+  ! printf '%s\n' "$out" | grep -Fq -- 'bbbbbbbbbbbbbbb1:latest'
+  ! printf '%s\n' "$out" | grep -Fq -- 'ddddddddddddddd1:latest'
+  ! printf '%s\n' "$out" | grep -Fq -- 'short-eh'
+  ! printf '%s\n' "$out" | grep -Fq -- 'unrelated'
+}
+
 test_slug_hash() {
   local p="/tmp/project with punctuation!"
   [[ "$(_pts_project_slug "$p")" == project-with-punctuation ]]
@@ -106,4 +163,6 @@ test_github_token_precedence
 test_fake_podman_resolution_and_stop
 test_diagnostics_do_not_dump_environment
 test_docs_contract
+test_bashrc_value_forms
+test_stale_image_listing
 printf 'PTS helper contract checks passed\n'
