@@ -57,7 +57,7 @@ The `polytoken-sandbox.sh` launcher starts a Docker daemon inside the sandbox be
 - Do not run `sudo`, `systemctl`, or `service` to start Docker. There is no host Docker service in this environment; first run `docker info` using the already-started daemon.
 - The launcher waits for `docker info` to succeed before starting Polytoken. Check `docker info` yourself when diagnosing daemon availability.
 - The daemon uses `--storage-driver vfs`, `--iptables=false`, and `--bridge=none`. These settings are required by the sandbox environment.
-- Because Docker bridge networking is disabled, use host networking for containers that need network access: `docker run --network=host ...`.
+- Because Docker bridge networking is disabled, nested containers that need network access use `docker run --network=host ...`; "host" here is PTS's private rootless network namespace, not the physical host network.
 - The daemon log is at `/tmp/dockerd.log` inside the sandbox if startup or container operations fail.
 - The sandbox image installs both Docker and Podman. Prefer Docker when the task specifically requires Docker; use Podman only when the task or existing project configuration calls for it.
 - The launcher continues into Polytoken if Docker does not become ready, so Docker-dependent work must verify readiness and report a clear error rather than silently assuming it works.

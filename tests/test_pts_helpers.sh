@@ -89,6 +89,10 @@ test_no_unsafe_operations() {
   ! grep -Fq -- '_pts_forward_int' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'polytoken_args=(continue)' "$root/polytoken-sandbox.sh"
   grep -Fq -- 'sh "${polytoken_args[@]}"' "$root/polytoken-sandbox.sh"
+  # Outer host networking crosses the rootless user-namespace boundary:
+  # nested runc then cannot mount sysfs or enter that network namespace.
+  ! grep -Eq '^[[:space:]]*--network=host \\' "$root/polytoken-sandbox.sh"
+  grep -Fq -- 'export DOCKER_CONFIG="$HOME/.docker"' "$root/polytoken-sandbox.sh"
 }
 
 test_management_is_early() {

@@ -185,8 +185,10 @@ test_pts_create_argv_wiring() {
         if [[ "$*" != *'-v /tmp/pts-test-vol-a:/mnt/vola:ro -v /tmp/pts-test-vol-b:/mnt/volb'* ]]; then echo 'FAIL: trusted volumes not passed verbatim' >&2; exit 9; fi
         if [[ "$*" != *"pts.project-hash=$_TEST_DIR_HASH"* ]]; then echo 'FAIL: project-hash label missing' >&2; exit 9; fi
         if [[ "$*" != *'GIT_CONFIG_COUNT=2'* ]]; then echo 'FAIL: git identity env wiring changed' >&2; exit 9; fi
+        if [[ "$*" == *'--network=host'* ]]; then echo 'FAIL: outer PTS must own a private network namespace for nested Docker' >&2; exit 9; fi
         if [[ -z "$script" ]]; then echo 'FAIL: no -c seed script in argv' >&2; exit 9; fi
         if ! printf '%s\n' "$script" | sh -n; then echo 'FAIL: seed script is not valid shell' >&2; exit 9; fi
+        if [[ "$script" != *'export DOCKER_CONFIG="$HOME/.docker"'* || "$script" != *'chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" "$DOCKER_CONFIG"'* ]]; then echo 'FAIL: writable project Docker config wiring changed' >&2; exit 9; fi
         if [[ "$script" != *'exec setpriv --reuid'* ]]; then echo 'FAIL: seed script lost its setpriv exec' >&2; exit 9; fi
         if [[ "${*: -1}" != continue || "${*: -2:1}" != sh ]]; then echo 'FAIL: polytoken args wiring changed' >&2; exit 9; fi
         printf 'created-full-idx\n'
