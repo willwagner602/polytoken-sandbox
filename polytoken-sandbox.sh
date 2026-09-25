@@ -672,8 +672,8 @@ if [ ! -x /opt/polytoken-bin/polytoken ]; then
         exit 1
     fi
 fi
-# The seed copy and historical binaries may be root-owned. Polytoken's
-# self-updater runs as the invoking user and requires ownership of its target.
+# Seeded and historical binaries may be root-owned. The updater runs as the
+# invoking user and requires ownership of its target.
 if [ -e /opt/polytoken-bin/polytoken ]; then
     chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" /opt/polytoken-bin/polytoken
 fi
