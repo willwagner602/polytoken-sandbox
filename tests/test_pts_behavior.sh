@@ -144,8 +144,9 @@ test_pts_create_argv_wiring() {
   } >"$home/.bashrc"
 
   # Trusted extra mounts, including blank and comment lines that must be
-  # skipped without producing argv entries.
-  mkdir -p "$d/.polytoken" /tmp/pts-test-vol-a /tmp/pts-test-vol-b
+  # skipped without producing argv entries. The configured shared workspace
+  # should also be mounted, but only when it exists.
+  mkdir -p "$d/.polytoken" "$home/work/docker_files" /tmp/pts-test-vol-a /tmp/pts-test-vol-b
   printf '# comment\n\n/tmp/pts-test-vol-a:/mnt/vola:ro\n/tmp/pts-test-vol-b:/mnt/volb\n' >"$d/.polytoken/volumes"
   trust_dir="$state/polytoken/pts/trust"
   mkdir -p -m 700 "$trust_dir"
@@ -183,12 +184,14 @@ test_pts_create_argv_wiring() {
         if [[ "$*" == *'OPENAI_API_KEY='* ]]; then echo 'FAIL: literal key value leaked into argv' >&2; exit 9; fi
         if [[ "$*" == *'-e GH_TOKEN='* ]]; then echo 'FAIL: literal GH token in argv' >&2; exit 9; fi
         if [[ "$*" != *'-v /tmp/pts-test-vol-a:/mnt/vola:ro -v /tmp/pts-test-vol-b:/mnt/volb'* ]]; then echo 'FAIL: trusted volumes not passed verbatim' >&2; exit 9; fi
+        if [[ "$*" != *"-v $HOME/work/docker_files:$HOME/work/docker_files"* ]]; then echo 'FAIL: shared docker_files workspace not mounted' >&2; exit 9; fi
         if [[ "$*" != *"pts.project-hash=$_TEST_DIR_HASH"* ]]; then echo 'FAIL: project-hash label missing' >&2; exit 9; fi
         if [[ "$*" != *'GIT_CONFIG_COUNT=2'* ]]; then echo 'FAIL: git identity env wiring changed' >&2; exit 9; fi
         if [[ "$*" == *'--network=host'* ]]; then echo 'FAIL: outer PTS must own a private network namespace for nested Docker' >&2; exit 9; fi
         if [[ -z "$script" ]]; then echo 'FAIL: no -c seed script in argv' >&2; exit 9; fi
         if ! printf '%s\n' "$script" | sh -n; then echo 'FAIL: seed script is not valid shell' >&2; exit 9; fi
         if [[ "$script" != *'export DOCKER_CONFIG="$HOME/.docker"'* || "$script" != *'chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" "$DOCKER_CONFIG"'* ]]; then echo 'FAIL: writable project Docker config wiring changed' >&2; exit 9; fi
+        if [[ "$script" != *'[ -e /opt/polytoken-bin/polytoken ]'* || "$script" != *'chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" /opt/polytoken-bin/polytoken'* ]]; then echo 'FAIL: Polytoken binary ownership not prepared for self-update' >&2; exit 9; fi
         if [[ "$script" != *'exec setpriv --reuid'* ]]; then echo 'FAIL: seed script lost its setpriv exec' >&2; exit 9; fi
         if [[ "${*: -1}" != continue || "${*: -2:1}" != sh ]]; then echo 'FAIL: polytoken args wiring changed' >&2; exit 9; fi
         printf 'created-full-idx\n'

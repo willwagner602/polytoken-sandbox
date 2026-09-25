@@ -309,9 +309,22 @@ pts() {
         --) shift ;;
     esac
 
+    # Use the operator's host Polytoken config when available; the bundled
+    # template remains the fallback. The project copy is bind-mounted, so a
+    # refreshed config is visible to an already-running `continue` process.
+    local host_config="${XDG_CONFIG_HOME:-$HOME/.config}/polytoken/config.yaml"
+    local config_source="$_pts_root/config-template.yaml"
+    [[ -f "$host_config" ]] && config_source="$host_config"
+    local refresh_project refresh_state refresh_config
+    refresh_project="$(pwd)"
+    refresh_state="$refresh_project/.polytoken"
+    refresh_config="$refresh_state/.config/polytoken/config.yaml"
+    mkdir -p "$(dirname "$refresh_config")"
+    cp "$config_source" "$refresh_config"
+
     if [[ -z "${1:-}" ]]; then
         local existing_project existing_hash existing_ids
-        existing_project="$(_pts_project_path "$(pwd)")" || return 1
+        existing_project="$(_pts_project_path "$refresh_project")" || return 1
         existing_hash="$(_pts_project_hash "$existing_project")"
         mapfile -t existing_ids < <(_pts_running_for_project "$existing_hash")
         if ((${#existing_ids[@]} == 1)); then
@@ -402,8 +415,9 @@ pts() {
     fi
 
     # Polytoken state (cache/auth/sessions) lives under the invocation
-    # directory, not $HOME, so it's per-project. config.yaml is re-synced
-    # from the template on every run (not just the first) so provider/
+    # directory, not $HOME, so it's per-project. config.yaml is synced above
+    # before reconnecting and here before creating a new container. The config
+    # is re-synced from the template each invocation so provider/
     # integration changes here always reach every project — it references
     # provider keys via ${OPENAI_API_KEY} etc. (polytoken supports env-var
     # interpolation in `auth.key`), which are already passed into the
@@ -416,7 +430,7 @@ pts() {
     mkdir -p "$global_config_dir"
     mkdir -p "$state_dir/.docker/run"
     ln -sfn /tmp/run-0/docker.sock "$state_dir/.docker/run/docker.sock"
-    cp "$_pts_root/config-template.yaml" "$project_config"
+    cp "$config_source" "$project_config"
     _pts_stage_ponytail "$global_config_dir"
 
     # Polytoken auto-discovers project context from a file named AGENTS.md
@@ -515,6 +529,12 @@ pts() {
         -v "$_pts_root/skills/container-release:$state_dir/skills/container-release:ro"
         -v "$angel_subagents_dir:$state_dir/subagents:ro"
     )
+    # Make the operator's docker_files workspace available in every PTS
+    # container, without mounting any other part of the host home directory.
+    local docker_files_dir="$HOME/work/docker_files"
+    if [[ -d "$docker_files_dir" ]] && [[ "$(realpath -e -- "$docker_files_dir")" != "$workdir" ]]; then
+        volumes+=(-v "$docker_files_dir:$docker_files_dir")
+    fi
     if [[ "$share_codex_cli" == 1 ]]; then
         volumes+=(-v "$codex_cli_host_dir:$codex_cli_dir")
     fi
@@ -651,6 +671,11 @@ if [ ! -x /opt/polytoken-bin/polytoken ]; then
         echo "pts: /opt/polytoken-bin/polytoken not found in the sandbox volume, and no host binary at ~/.local/bin/polytoken to seed it from." >&2
         exit 1
     fi
+fi
+# Seeded and historical binaries may be root-owned. The updater runs as the
+# invoking user and requires ownership of its target.
+if [ -e /opt/polytoken-bin/polytoken ]; then
+    chown "${PTS_UID:-$(id -u)}:${PTS_GID:-$(id -g)}" /opt/polytoken-bin/polytoken
 fi
 dockerd --host=unix:///tmp/run-0/docker.sock --storage-driver=vfs --iptables=false --bridge=none > /tmp/dockerd.log 2>&1 &
 daemon_pid=$!

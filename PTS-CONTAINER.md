@@ -45,6 +45,7 @@ By default, PTS exposes only these host paths:
 | Host path | Container path | Mode | Purpose |
 |---|---|---|---|
 | Current working directory | Same absolute path | Read/write | Project files and Polytoken state |
+| `~/work/docker_files/` | Same absolute path | Read/write, if present | Shared workspace, available from any PTS project |
 | `~/.local/bin/polytoken` | `/opt/polytoken-seed/polytoken` | Read-only, if present | Initial source for the shared Polytoken binary volume |
 | `~/.local/share/polytoken/auth/codex/` | `$HOME/.local/share/polytoken/auth/codex/` | Read/write | Shared Polytoken Codex auth and token refresh |
 | `~/.bashrc.d/polytoken-sandbox/angel/skills/` | `$HOME/skills/` | Read-only | Angel skills |
