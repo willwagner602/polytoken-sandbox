@@ -102,6 +102,18 @@ test_management_is_early() {
   (( dispatch < setup ))
 }
 
+# The container startup payload is one single-quoted Bash literal
+# (`local seed_and_exec='...'`). A stray apostrophe inside it silently ends
+# the literal and executes the remaining payload lines in the host shell —
+# an observed regression. Pin the invariant: the extracted literal may
+# contain exactly its opening and closing apostrophes, nothing else.
+test_seed_payload_quoting() {
+  local payload
+  payload="$(sed -n "/^[[:space:]]*local seed_and_exec='\$/,/^[[:space:]]*'\$/p" "$root/polytoken-sandbox.sh")"
+  [[ -n "$payload" ]]
+  [[ "$(grep -o "'" <<<"$payload" | wc -l)" -eq 2 ]]
+}
+
 test_github_token_precedence() {
   gh() {
     [[ "$*" == 'auth token' ]] || return 1
@@ -162,6 +174,7 @@ test_docs_contract() {
 
 test_slug_hash
 test_no_unsafe_operations
+test_seed_payload_quoting
 test_management_is_early
 test_github_token_precedence
 test_fake_podman_resolution_and_stop
